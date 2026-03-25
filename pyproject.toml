@@ -1,0 +1,16 @@
+[project]
+name = "django-tasks-google"
+version = "0.1.0"
+description = "Django's Task Framework backends for: Cloud Tasks, Cloud Scheduler, and Cloud Run Jobs"
+requires-python = ">=3.12"
+dependencies = [
+    "django>=6.0.0",
+    "google-cloud-run>=0.1.0",
+    "google-cloud-scheduler>=2.0.0",
+    "google-cloud-tasks>=2.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.7",
+]
