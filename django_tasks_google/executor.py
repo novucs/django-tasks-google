@@ -5,7 +5,6 @@ from datetime import timedelta
 from traceback import format_exception
 
 from django.db import close_old_connections, connection, transaction
-from django.tasks import task_backends
 from django.tasks.base import TaskContext, TaskResultStatus
 from django.tasks.signals import task_finished, task_started
 from django.utils import timezone
@@ -24,8 +23,13 @@ class TaskLeaseConflict(Exception):
 
 
 def execute_task(execution_id):
-    worker_id, execution = try_acquire_execution_lease(execution_id)
-    backend = task_backends[execution.backend]
+    try:
+        worker_id, execution = try_acquire_execution_lease(execution_id)
+    except (TaskAlreadyFinished, TaskLeaseConflict) as e:
+        logger.warning(f"Failed to acquire {execution_id}: {e}")
+        return False
+
+    backend = execution.backend
     stop_event = threading.Event()
     heartbeat_thread = threading.Thread(
         target=heartbeat_loop,
@@ -52,14 +56,15 @@ def execute_task(execution_id):
             return False
         task_finished.send(sender=type(backend), task_result=execution.task_result)
         logger.info(f"{execution} completed")
-        return True
+        return False
 
-    except Exception as e:
+    except BaseException as e:
         logger.exception(f"An error occurred during {execution}")
         updated = finalize_failure(execution_id, worker_id, e)
-        if updated:
-            task_finished.send(sender=type(backend), task_result=execution.task_result)
-        return False
+        if not updated:
+            return False
+        task_finished.send(sender=type(backend), task_result=execution.task_result)
+        return True  # Only attempt to retry if we held the lease.
 
     finally:
         if backend.heartbeat_enabled:
@@ -74,7 +79,7 @@ def try_acquire_execution_lease(execution_id: int):
         if execution.status == TaskResultStatus.SUCCESSFUL:
             raise TaskAlreadyFinished(f"{execution} is already done")
 
-        backend = task_backends[execution.backend]
+        backend = execution.backend
         if (
             execution.status == TaskResultStatus.RUNNING
             and execution.lease_expires_at
@@ -161,13 +166,7 @@ def finalize_success(execution_id, worker_id, return_value):
         return True
 
 
-def finalize_failure(execution_id, worker_id, e):
-    exception_type = type(e)
-    error_entry = {
-        "exception_class_path": f"{exception_type.__module__}.{exception_type.__qualname__}",
-        "traceback": "".join(format_exception(e)),
-    }
-
+def finalize_failure(execution_id, worker_id, exception):
     close_old_connections()
     with transaction.atomic():
         execution = TaskExecution.objects.select_for_update().get(pk=execution_id)
@@ -180,9 +179,9 @@ def finalize_failure(execution_id, worker_id, e):
 
         execution.finished_at = timezone.now()
         execution.status = TaskResultStatus.FAILED
-        execution.errors = [*(execution.errors or []), error_entry]
         execution.lease_worker_id = None
         execution.lease_expires_at = None
+        execution.append_error_entry(exception)
         execution.save(
             update_fields=[
                 "finished_at",

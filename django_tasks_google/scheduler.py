@@ -1,5 +1,3 @@
-import json
-
 from django.db import transaction
 from django.tasks import Task, task_backends
 
@@ -12,29 +10,29 @@ def schedule_task(
     *,
     name: str = "",
     description: str = "",
-    backend: str = "scheduler",
+    time_zone: str = "UTC",
+    enabled: bool = True,
+    backend: str = "",
+    queue_name: str = "",
     takes_context: bool | None = None,
     args: list | None = None,
     kwargs: dict | None = None,
-    time_zone: str = "UTC",
-    enabled: bool = True,
 ) -> ScheduledTask:
     with transaction.atomic():
         scheduled_task = ScheduledTask.objects.create(
             name=name or task.name,
             description=description,
-            module_path=task.module_path,
-            backend=task_backends[backend].alias,
-            takes_context=(
-                takes_context if takes_context is not None else task.takes_context
-            ),
-            args=args or [],
-            kwargs=kwargs or {},
             schedule=schedule,
             time_zone=time_zone,
             state=(
                 ScheduledTask.State.ENABLED if enabled else ScheduledTask.State.DISABLED
             ),
+            module_path=task.module_path,
+            backend_alias=task_backends[backend].alias,
+            queue_name=queue_name,
+            takes_context=takes_context,
+            args=args or [],
+            kwargs=kwargs or {},
         )
         scheduled_task.sync()
     return scheduled_task
@@ -42,18 +40,19 @@ def schedule_task(
 
 def sync_scheduled_tasks():
     for task in ScheduledTask.objects.all():
-        sync_scheduled_task(task)
+        sync_scheduled_task(task.pk)
 
 
-def sync_scheduled_task(task: ScheduledTask):
+@transaction.atomic
+def sync_scheduled_task(scheduled_task_id: int):
     from google.api_core.exceptions import NotFound
     from google.cloud import scheduler_v1
 
+    task = ScheduledTask.objects.select_for_update().get(pk=scheduled_task_id)
     client = scheduler_v1.CloudSchedulerClient()
-    backend = task_backends[task.backend]
+    backend = task.backend
     parent = f"projects/{backend.project_id}/locations/{backend.location}"
     job_name = f"{parent}/jobs/{task.name}"
-    payload = {"backend": task.backend}
     job = scheduler_v1.Job(
         name=job_name,  # type: ignore
         description=task.description,
@@ -61,12 +60,10 @@ def sync_scheduled_task(task: ScheduledTask):
         time_zone=task.time_zone,
         http_target=scheduler_v1.HttpTarget(  # type: ignore
             http_method=scheduler_v1.HttpMethod.POST,  # type: ignore
-            uri=backend.target_url,
-            headers={"Content-Type": "application/json"},
-            body=json.dumps(payload).encode(),  # type: ignore
+            uri=backend.schedule_url,
             oidc_token=scheduler_v1.OidcToken(  # type: ignore
                 service_account_email=backend.oidc_service_account,
-                audience=backend.target_url,
+                audience=backend.oidc_audience,
             ),
         ),
     )
@@ -93,13 +90,13 @@ def sync_scheduled_task(task: ScheduledTask):
         client.pause_job(name=job_name)
 
 
-def delete_remote_scheduled_task(task: ScheduledTask):
+def delete_cloud_scheduler_job_if_exists(job_name: str | None = None):
     from google.api_core.exceptions import NotFound
     from google.cloud import scheduler_v1
 
     client = scheduler_v1.CloudSchedulerClient()
-    if task.cloud_scheduler_job_name:
+    if job_name:
         try:
-            client.delete_job(name=task.cloud_scheduler_job_name)
+            client.delete_job(name=job_name)
         except NotFound:
             pass

@@ -8,7 +8,7 @@ from django.contrib import admin, messages
 from django.core.exceptions import ValidationError
 
 from django_tasks_google.models import ScheduledTask
-from django_tasks_google.scheduler import delete_remote_scheduled_task
+from django_tasks_google.scheduler import delete_cloud_scheduler_job_if_exists
 
 
 def get_task_choices():
@@ -172,7 +172,7 @@ class ScheduledTaskAdmin(admin.ModelAdmin):
 
     def _cleanup_cloud_scheduler(self, request, task):
         try:
-            delete_remote_scheduled_task(task)
+            delete_cloud_scheduler_job_if_exists(task.cloud_scheduler_job_name)
         except Exception as e:
             self.message_user(
                 request,

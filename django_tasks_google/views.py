@@ -1,95 +1,94 @@
 import json
 import logging
-from json import JSONDecodeError
 
+from django.core.exceptions import PermissionDenied
 from django.db import transaction
-from django.http import JsonResponse
-from django.shortcuts import get_object_or_404
+from django.http import (
+    HttpResponse,
+    HttpResponseBadRequest,
+    HttpResponseNotFound,
+    HttpResponseServerError,
+)
 from django.tasks import InvalidTaskBackend, task_backends
+from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
 from django_tasks_google.executor import execute_task
-from django_tasks_google.models import ScheduledTask, TaskExecution
+from django_tasks_google.models import ScheduledTask
 
 logger = logging.getLogger("django_tasks_google")
 
 
-def handle_oidc_auth(request, audience, email):
+def handle_oidc_auth(request, backend):
+    from google.auth.exceptions import GoogleAuthError
     from google.auth.transport import requests as google_requests
     from google.oauth2 import id_token
 
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
-        return False, "Missing or invalid Authorization header"
+        raise PermissionDenied("Missing or invalid Authorization header")
 
     token = auth_header[7:]
     try:
+        # verify_oauth2_token checks the issuer for us
         claims = id_token.verify_oauth2_token(
-            token, google_requests.Request(), audience=audience
+            token, google_requests.Request(), audience=backend.oidc_audience
         )
-        if claims.get("email") != email:
-            return False, f"Unexpected caller email: {claims.get('email')}"
-        if claims.get("email_verified") is not True:
-            return False, "Caller email is not verified"
-        return True, None
-    except Exception as e:
-        logger.error(f"OIDC token verification failed: {e}")
-        return False, str(e)
+        if claims.get("email") != backend.oidc_service_account:
+            raise PermissionDenied(f"Unexpected caller email: {claims.get('email')}")
+        if not claims.get("email_verified"):
+            raise PermissionDenied("Caller email is not verified")
+    except (ValueError, GoogleAuthError) as e:
+        logger.warning("OIDC token verification failed: %s", e)
+        raise PermissionDenied("OIDC token verification failed")
 
 
 @require_POST
 @csrf_exempt
-@transaction.non_atomic_requests
+@transaction.non_atomic_requests  # avoid holding a DB transaction open during execution
 def execute_task_view(request):
     try:
         data = json.loads(request.body)
-        backend = task_backends[data["backend"]]
-    except (JSONDecodeError, KeyError, InvalidTaskBackend) as e:
-        logger.warning(f"Cannot verify backend: {e}")
-        return JsonResponse(
-            {
-                "error": "Unauthorized",
-                "detail": f"Cannot verify backend: {request.body}",
-            },
-            status=401,
-        )
-    is_valid, error_message = handle_oidc_auth(
-        request,
-        audience=backend.target_url,
-        email=backend.oidc_service_account,
-    )
-    if not is_valid:
-        logger.warning(f"Authentication failed: {error_message}")
-        return JsonResponse(
-            {"error": "Unauthorized", "detail": error_message},
-            status=401,
-        )
+        backend = task_backends[data["backend_alias"]]
+        execution_id = data["execution_id"]
+    except (json.JSONDecodeError, InvalidTaskBackend, KeyError):
+        return HttpResponseBadRequest()
+    handle_oidc_auth(request, backend)
+    retry = execute_task(execution_id)
+    if retry:
+        logger.info("Task %s requested retry", execution_id)
+        return HttpResponseServerError()
+    return HttpResponse(status=204)
 
-    if request.headers.get("X-CloudScheduler"):
-        job_name = request.headers["X-CloudScheduler-JobName"]
-        schedule_time = request.headers["X-CloudScheduler-ScheduleTime"]
-        cloud_scheduler_idempotency_key = f"{job_name}:{schedule_time}"
-        execution = TaskExecution.objects.filter(
-            cloud_scheduler_idempotency_key=cloud_scheduler_idempotency_key,
-        ).first()
-        if not execution:
-            task = get_object_or_404(
-                ScheduledTask, name=job_name, backend=backend.alias
-            )
-            execution = TaskExecution.objects.create(
-                module_path=task.module_path,
-                backend=task.backend,
-                queue_name=task.name,
-                takes_context=task.takes_context,
-                args=task.args,
-                kwargs=task.kwargs,
-                cloud_scheduler_idempotency_key=cloud_scheduler_idempotency_key,
-            )
-    else:
-        execution = get_object_or_404(
-            TaskExecution, pk=data["task_execution_id"], backend=backend.alias
-        )
 
-    ok = execute_task(execution.pk)
-    return JsonResponse({"ok": ok}, status=200 if ok else 500)
+@require_POST
+@csrf_exempt
+@transaction.atomic
+def schedule_task_view(request):
+    try:
+        data = json.loads(request.body)
+        backend = task_backends[data["backend_alias"]]
+        task_id = data["task_id"]
+        schedule_time = parse_datetime(request.headers["X-CloudScheduler-ScheduleTime"])
+    except (json.JSONDecodeError, InvalidTaskBackend, KeyError, ValueError, TypeError):
+        return HttpResponseBadRequest()
+
+    if schedule_time is None:
+        return HttpResponseBadRequest()
+
+    handle_oidc_auth(request, backend)
+
+    try:
+        task = ScheduledTask.objects.select_for_update().get(pk=task_id)
+    except ScheduledTask.DoesNotExist:
+        return HttpResponseNotFound()
+
+    if task.last_scheduled_at == schedule_time:
+        logger.warning("Prevented duplicate task execution for task %s", task)
+        return HttpResponse(status=204)
+
+    task.last_scheduled_at = schedule_time
+    task.save(update_fields=["last_scheduled_at"])
+    task.enqueue()
+    return HttpResponse(status=204)
