@@ -5,13 +5,12 @@ from json import JSONDecodeError
 from django.db import transaction
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
-from django.tasks import task_backends, InvalidTaskBackend
+from django.tasks import InvalidTaskBackend, task_backends
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
 from django_tasks_google.executor import execute_task
-from django_tasks_google.models import TaskExecution, ScheduledTask
-
+from django_tasks_google.models import ScheduledTask, TaskExecution
 
 logger = logging.getLogger("django_tasks_google")
 
@@ -92,15 +91,5 @@ def execute_task_view(request):
             TaskExecution, pk=data["task_execution_id"], backend=backend.alias
         )
 
-    ok = execute_task(execution)
-    return JsonResponse(
-        {
-            "id": execution.pk,
-            "status": execution.status.value,
-            "errors": execution.errors,
-            "args": execution.args,
-            "kwargs": execution.kwargs,
-            "return_value": execution.return_value,
-        },
-        status=200 if ok else 500,
-    )
+    ok = execute_task(execution.pk)
+    return JsonResponse({"ok": ok}, status=200 if ok else 500)

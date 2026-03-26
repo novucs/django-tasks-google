@@ -92,7 +92,6 @@ urlpatterns = [
 ```python
 # tasks.py
 from django.tasks import task
-from django_tasks_google.scheduler import schedule_task
 
 
 @task(queue_name="your-cloud-task-queue")
@@ -109,12 +108,45 @@ def compute_meaning_of_life():
 
 
 @task(backend="scheduler")  # "queue_name" will be populated with the scheduled task job name
-def send_daily_newsletter(email):
-    user = User.objects.get(email=email)
+def send_daily_newsletter(user_id):
+    user = User.objects.get(id=user_id)
     # ...
     return f"Newsletter sent to {user.email}"
 
 
-# Creates a job on Google Cloud Scheduler.
-schedule_task(send_daily_newsletter, "0 */3 * * *", args=["user@example.com"])
 ```
+
+### 5. Enqueue tasks
+
+Enqueuing tasks e.g. `compute_meaning_of_life.enqueue()` works for both Cloud Tasks and Cloud Run Jobs.
+Cloud Scheduler tasks may only be enqueued by Cloud Scheduler itself. An admin dashboard exists for
+managing Cloud Scheduler tasks within Django, or you may programmatically manage them using the
+`ScheduledTask` model.
+
+```python
+from django_tasks_google.scheduler import schedule_task
+from django_tasks_google.models import TaskExecution, ScheduledTask
+
+# Cloud Tasks and Cloud Run Jobs are enqueued using the builtin Django tasks API.
+send_notification.enqueue(user_id=1)
+task_result = compute_meaning_of_life.enqueue()
+
+# Task results for all jobs are accessible and are saved to the `TaskExecution` model.
+task_result.refresh()
+task_result.return_value  # 42 (if job successfully completed)
+
+# To access the `TaskExecution` model.
+execution = TaskExecution.objects.get(pk=task_result.id)
+
+# Only Cloud Run Job tasks can be canceled mid-run.
+execution.cancel()
+
+# Creates an instance of ScheduledTask and a job on Google Cloud Scheduler.
+scheduled_task: ScheduledTask = schedule_task(send_daily_newsletter, "0 */3 * * *", args=[1])
+```
+
+Task args, kwargs, and return values must all be JSON serializable.
+
+## More Info
+
+Check out the [Official Django Docs](https://docs.djangoproject.com/en/6.0/topics/tasks/) for more on Django tasks.

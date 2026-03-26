@@ -1,4 +1,6 @@
 import json
+from abc import ABC
+from datetime import timedelta
 
 from django.core.exceptions import ImproperlyConfigured
 from django.tasks.backends.base import BaseTaskBackend
@@ -6,21 +8,50 @@ from django.tasks.signals import task_enqueued
 
 from django_tasks_google.models import TaskExecution
 
+DEFAULT_HEARTBEAT_ENABLED = True
+DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 10
+DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 30
+DEFAULT_HEARTBEAT_JOIN_TIMEOUT_SECONDS = 5
 
-class CloudRunJobsBackend(BaseTaskBackend):
-    supports_defer = False
-    supports_async_task = True
-    supports_get_result = True
-    supports_priority = False
 
+class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
     def __init__(self, alias, params):
         super().__init__(alias, params)
         self.project_id = self.options.get("project_id")
         self.location = self.options.get("location")
+        self.heartbeat_enabled = self.options.get(
+            "heartbeat_enabled", DEFAULT_HEARTBEAT_ENABLED
+        )
+        self.heartbeat_interval = timedelta(
+            seconds=self.options.get(
+                "heartbeat_interval_seconds", DEFAULT_HEARTBEAT_INTERVAL_SECONDS
+            )
+        )
+        self.heartbeat_timeout = timedelta(
+            seconds=self.options.get(
+                "heartbeat_timeout_seconds", DEFAULT_HEARTBEAT_TIMEOUT_SECONDS
+            )
+        )
+        self.heartbeat_join_timeout = timedelta(
+            seconds=self.options.get(
+                "heartbeat_join_timeout_seconds", DEFAULT_HEARTBEAT_JOIN_TIMEOUT_SECONDS
+            )
+        )
         if not self.project_id:
             raise ImproperlyConfigured("project_id is required")
         if not self.location:
             raise ImproperlyConfigured("location is required")
+        if self.heartbeat_interval > self.heartbeat_timeout:
+            raise ImproperlyConfigured(
+                "heartbeat_interval_seconds cannot be greater than heartbeat_timeout_seconds"
+            )
+
+
+class CloudRunJobsBackend(DjangoTasksGoogleBackend):
+    supports_defer = False
+    supports_async_task = True
+    supports_get_result = True
+    supports_priority = False
 
     def enqueue(self, task, args, kwargs):
         from google.cloud import run_v2
@@ -58,7 +89,7 @@ class CloudRunJobsBackend(BaseTaskBackend):
         return TaskExecution.objects.get(pk=result_id).task_result
 
 
-class CloudTasksBackend(BaseTaskBackend):
+class CloudTasksBackend(DjangoTasksGoogleBackend):
     supports_defer = True
     supports_async_task = True
     supports_get_result = True
@@ -66,14 +97,8 @@ class CloudTasksBackend(BaseTaskBackend):
 
     def __init__(self, alias, params):
         super().__init__(alias, params)
-        self.project_id = self.options.get("project_id")
-        self.location = self.options.get("location")
         self.target_url = self.options.get("target_url")
         self.oidc_service_account = self.options.get("oidc_service_account")
-        if not self.project_id:
-            raise ImproperlyConfigured("project_id is required")
-        if not self.location:
-            raise ImproperlyConfigured("location is required")
         if not self.target_url:
             raise ImproperlyConfigured("target_url is required")
         if not self.oidc_service_account:
@@ -133,14 +158,8 @@ class CloudSchedulerBackend(BaseTaskBackend):
 
     def __init__(self, alias, params):
         super().__init__(alias, params)
-        self.project_id = self.options.get("project_id")
-        self.location = self.options.get("location")
         self.target_url = self.options.get("target_url")
         self.oidc_service_account = self.options.get("oidc_service_account")
-        if not self.project_id:
-            raise ImproperlyConfigured("project_id is required")
-        if not self.location:
-            raise ImproperlyConfigured("location is required")
         if not self.target_url:
             raise ImproperlyConfigured("target_url is required")
         if not self.oidc_service_account:

@@ -1,13 +1,12 @@
 from django.db import models
 from django.tasks import (
-    TaskResultStatus,
+    DEFAULT_TASK_BACKEND_ALIAS,
+    DEFAULT_TASK_QUEUE_NAME,
     Task,
     TaskResult,
-    DEFAULT_TASK_QUEUE_NAME,
-    task_backends,
-    DEFAULT_TASK_BACKEND_ALIAS,
+    TaskResultStatus,
 )
-from django.tasks.base import TaskError, DEFAULT_TASK_PRIORITY
+from django.tasks.base import DEFAULT_TASK_PRIORITY, TaskError
 from django.utils import timezone
 from django.utils.module_loading import import_string
 
@@ -65,18 +64,21 @@ class TaskExecution(models.Model):
     cloud_task_name = models.TextField(null=True, unique=True)
     cloud_scheduler_idempotency_key = models.TextField(null=True, unique=True)
 
+    lease_worker_id = models.TextField(null=True)
+    lease_expires_at = models.DateTimeField(null=True)
+
     def __str__(self):
         idempotency_key = (
             self.cloud_run_job_execution_name
             or self.cloud_task_name
             or self.cloud_scheduler_idempotency_key
         )
-        return f"[{self.status.upper()}] {idempotency_key} (#{self.pk}) at {self.enqueued_at:%Y-%m-%d %H:%M}"
+        return f"{self.module_path}:{idempotency_key}"
 
     @property
     def task(self) -> Task:
         return Task(
-            priority=DEFAULT_TASK_PRIORITY,
+            priority=self.priority,
             func=import_string(self.module_path).func,
             backend=self.backend,
             queue_name=self.queue_name,
@@ -113,10 +115,6 @@ class TaskExecution(models.Model):
             for error in self.errors
         ]
 
-    @property
-    def backend_class(self):
-        return task_backends[self.backend]
-
     def cancel(self):
         if not self.cloud_run_job_execution_name:
             raise NotImplementedError("Only Cloud Run Jobs may be cancelled")
@@ -127,7 +125,8 @@ class TaskExecution(models.Model):
         client.cancel_execution(
             run_v2.CancelExecutionRequest(name=self.cloud_run_job_execution_name)
         )
-        self.cancelled_at = timezone.now()
-        self.finished_at = self.cancelled_at
+        now = timezone.now()
+        self.cancelled_at = now
+        self.finished_at = now
         self.status = TaskResultStatus.FAILED
         self.save(update_fields=["cancelled_at", "finished_at", "status"])

@@ -13,7 +13,7 @@ def schedule_task(
     name: str = "",
     description: str = "",
     backend: str = "scheduler",
-    takes_context: bool = False,
+    takes_context: bool | None = None,
     args: list | None = None,
     kwargs: dict | None = None,
     time_zone: str = "UTC",
@@ -21,18 +21,20 @@ def schedule_task(
 ) -> ScheduledTask:
     with transaction.atomic():
         scheduled_task = ScheduledTask.objects.create(
-            name=name,
+            name=name or task.name,
             description=description,
             module_path=task.module_path,
             backend=task_backends[backend].alias,
-            takes_context=takes_context,
+            takes_context=(
+                takes_context if takes_context is not None else task.takes_context
+            ),
             args=args or [],
             kwargs=kwargs or {},
             schedule=schedule,
             time_zone=time_zone,
-            state=ScheduledTask.State.ENABLED
-            if enabled
-            else ScheduledTask.State.DISABLED,
+            state=(
+                ScheduledTask.State.ENABLED if enabled else ScheduledTask.State.DISABLED
+            ),
         )
         scheduled_task.sync()
     return scheduled_task
