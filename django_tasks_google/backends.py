@@ -17,6 +17,8 @@ DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 10
 DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 30
 DEFAULT_HEARTBEAT_JOIN_TIMEOUT_SECONDS = 5
 
+logger = logging.getLogger("django_tasks_google")
+
 
 def get_oidc_audience(url):
     parsed_url = urlparse(url)
@@ -133,10 +135,14 @@ class CloudRunJobsBackend(DjangoTasksGoogleBackend):
             )
             try:
                 operation = client.run_job(request=request)
-            except Exception as e:
-                logging.exception("Failed to enqueue task %s", execution_id)
+            except Exception as err:
+                logger.exception(
+                    "Failed enqueuing Cloud Run job execution_id=%s queue=%s",
+                    execution_id,
+                    execution.queue_name,
+                )
                 execution.status = TaskResultStatus.FAILED
-                execution.append_error_entry(e)
+                execution.append_error_entry(err)
                 execution.save(update_fields=["status", "errors"])
                 return
             execution.cloud_run_job_execution_name = operation.metadata.name
@@ -188,10 +194,14 @@ class CloudTasksBackend(DjangoTasksGoogleBackend):
                     parent=f"projects/{self.project_id}/locations/{self.location}/queues/{execution.queue_name}",
                     task=cloud_task_definition,
                 )
-            except Exception as e:
-                logging.exception("Failed to enqueue task %s", execution_id)
+            except Exception as err:
+                logger.exception(
+                    "Failed enqueuing Cloud Task execution_id=%s queue=%s",
+                    execution_id,
+                    execution.queue_name,
+                )
                 execution.status = TaskResultStatus.FAILED
-                execution.append_error_entry(e)
+                execution.append_error_entry(err)
                 execution.save(update_fields=["status", "errors"])
                 return
             execution.cloud_task_name = cloud_task.name

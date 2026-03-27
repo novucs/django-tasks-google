@@ -59,12 +59,14 @@ def test_sync_tasks_failure_message(admin_site, http_request, scheduled_task):
         patch.object(
             ScheduledTask, "sync", autospec=True, side_effect=RuntimeError("boom")
         ),
+        patch("django_tasks_google.admin.logger.exception") as log_exception_mock,
         patch.object(model_admin, "message_user", autospec=True) as message_user_mock,
     ):
         model_admin.sync_tasks(
             http_request, ScheduledTask.objects.filter(pk=scheduled_task.pk)
         )
 
+    log_exception_mock.assert_called_once()
     message_user_mock.assert_called_once()
     call_args = message_user_mock.call_args.args
     message = call_args[-2]
@@ -89,11 +91,13 @@ def test_save_model_warns_when_sync_fails(admin_site, http_request):
         patch.object(
             ScheduledTask, "sync", autospec=True, side_effect=ValueError("nope")
         ),
+        patch("django_tasks_google.admin.logger.exception") as log_exception_mock,
         patch.object(model_admin, "message_user", autospec=True) as message_user_mock,
     ):
         model_admin.save_model(http_request, task, form, change=False)
 
     task.refresh_from_db()
+    log_exception_mock.assert_called_once()
     message_user_mock.assert_called_once()
     call_args = message_user_mock.call_args.args
     message = call_args[-2]
@@ -133,10 +137,12 @@ def test_delete_model_warns_when_cleanup_fails(
             "django_tasks_google.admin.delete_cloud_scheduler_job_if_exists",
             side_effect=RuntimeError("cannot delete"),
         ),
+        patch("django_tasks_google.admin.logger.exception") as log_exception_mock,
         patch.object(model_admin, "message_user", autospec=True) as message_user_mock,
     ):
         model_admin.delete_model(http_request, scheduled_task)
 
+    log_exception_mock.assert_called_once()
     message_user_mock.assert_called_once()
     call_args = message_user_mock.call_args.args
     message = call_args[-2]

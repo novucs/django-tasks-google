@@ -217,6 +217,7 @@ def test_cloud_run_enqueue_gcp_marks_failed_on_client_error():
 
     with (
         patch("google.cloud.run_v2.JobsClient", autospec=True) as jobs_client_cls,
+        patch("django_tasks_google.backends.logger.exception") as log_exception_mock,
         patch(
             "django_tasks_google.backends.task_enqueued.send", autospec=True
         ) as send_mock,
@@ -226,6 +227,7 @@ def test_cloud_run_enqueue_gcp_marks_failed_on_client_error():
         backend.enqueue_gcp(execution.pk)
 
     execution.refresh_from_db()
+    log_exception_mock.assert_called_once()
     assert execution.status == "FAILED"
     assert execution.cloud_run_job_execution_name is None
     assert len(execution.errors) == 1
