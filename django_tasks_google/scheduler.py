@@ -1,3 +1,6 @@
+import uuid
+from urllib.parse import urlencode
+
 from django.db import transaction
 from django.tasks import Task, task_backends
 
@@ -44,15 +47,20 @@ def sync_scheduled_tasks():
 
 
 @transaction.atomic
-def sync_scheduled_task(scheduled_task_id: int):
+def sync_scheduled_task(task_id: int):
     from google.api_core.exceptions import NotFound
     from google.cloud import scheduler_v1
 
-    task = ScheduledTask.objects.select_for_update().get(pk=scheduled_task_id)
+    task = ScheduledTask.objects.select_for_update().get(pk=task_id)
     client = scheduler_v1.CloudSchedulerClient()
     backend = task.backend
     parent = f"projects/{backend.project_id}/locations/{backend.location}"
     job_name = f"{parent}/jobs/{task.name}"
+    payload = {
+        "task_id": str(task_id),
+        "backend": task.backend_alias,
+        "idempotency_key": str(uuid.uuid4()),
+    }
     job = scheduler_v1.Job(
         name=job_name,  # type: ignore
         description=task.description,
@@ -61,6 +69,8 @@ def sync_scheduled_task(scheduled_task_id: int):
         http_target=scheduler_v1.HttpTarget(  # type: ignore
             http_method=scheduler_v1.HttpMethod.POST,  # type: ignore
             uri=backend.schedule_url,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            body=urlencode(payload).encode(),  # type: ignore
             oidc_token=scheduler_v1.OidcToken(  # type: ignore
                 service_account_email=backend.oidc_service_account,
                 audience=backend.oidc_audience,

@@ -2,7 +2,6 @@ import logging
 import threading
 import uuid
 from datetime import timedelta
-from traceback import format_exception
 
 from django.db import close_old_connections, connection, transaction
 from django.tasks.base import TaskContext, TaskResultStatus

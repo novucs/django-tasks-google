@@ -1,9 +1,8 @@
-import json
 import logging
 from abc import ABC, abstractmethod
 from datetime import timedelta
 from functools import partial
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
@@ -164,15 +163,15 @@ class CloudTasksBackend(DjangoTasksGoogleBackend):
             execution = TaskExecution.objects.select_for_update().get(pk=execution_id)
             client = tasks_v2.CloudTasksClient()
             payload = {
-                "execution_id": execution_id,
-                "backend_alias": execution.backend_alias,
+                "execution_id": str(execution_id),
+                "backend": execution.backend_alias,
             }
             cloud_task_definition = tasks_v2.Task(
                 http_request=tasks_v2.HttpRequest(  # type: ignore
                     http_method=tasks_v2.HttpMethod.POST,  # type: ignore
                     url=self.execute_url,
-                    headers={"Content-Type": "application/json"},
-                    body=json.dumps(payload).encode(),  # type: ignore
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    body=urlencode(payload).encode(),  # type: ignore
                     oidc_token=tasks_v2.OidcToken(  # type: ignore
                         service_account_email=self.oidc_service_account,
                         audience=self.oidc_audience,

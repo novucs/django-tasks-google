@@ -36,7 +36,7 @@ class ScheduledTask(models.Model):
     kwargs = models.JSONField(default=dict, blank=True)
 
     cloud_scheduler_job_name = models.TextField(null=True, unique=True)
-    last_scheduled_at = models.DateTimeField(null=True)
+    idempotency_key = models.TextField(null=True)
 
     def sync(self):
         from django_tasks_google.scheduler import sync_scheduled_task
