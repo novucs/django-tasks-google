@@ -13,8 +13,6 @@ from django.tasks.base import DEFAULT_TASK_PRIORITY, TaskError
 from django.utils import timezone
 from django.utils.module_loading import import_string
 
-from django_tasks_google.scheduler import sync_scheduled_task
-
 
 class ScheduledTask(models.Model):
     class State(models.TextChoices):
@@ -41,6 +39,7 @@ class ScheduledTask(models.Model):
     idempotency_key = models.TextField(null=True)
 
     def sync(self):
+        from django_tasks_google.scheduler import sync_scheduled_task
 
         sync_scheduled_task(self.pk)
 
