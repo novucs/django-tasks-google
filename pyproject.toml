@@ -18,6 +18,7 @@ license-files = ["LICENSE"]
 [dependency-groups]
 dev = [
     "django-stubs>=6.0.1",
+    "pre-commit>=4.5.1",
     "pytest>=9.0.2",
     "pytest-django>=4.11.1",
     "ruff>=0.15.7",

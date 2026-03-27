@@ -169,9 +169,16 @@ recurring tasks.
 
 ## Development
 
+Install git hooks:
+
+```bash
+uv run pre-commit install
+```
+
 Run checks locally:
 
 ```bash
+uv run pre-commit run --all-files
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest
@@ -186,4 +193,3 @@ DJANGO_SETTINGS_MODULE=tests.settings PYTHONPATH=. uv run python -m django makem
 ## References
 
 - [Django Task Framework docs](https://docs.djangoproject.com/en/6.0/topics/tasks/)
-
