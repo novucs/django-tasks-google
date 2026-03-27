@@ -58,7 +58,7 @@ def sync_scheduled_task(task_id: int):
     job_name = f"{parent}/jobs/{task.name}"
     payload = {
         "task_id": str(task_id),
-        "backend": task.backend_alias,
+        "backend": task.backend.alias,
         "idempotency_key": str(uuid.uuid4()),
     }
     job = scheduler_v1.Job(

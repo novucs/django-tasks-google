@@ -25,7 +25,7 @@ def execute_task_view(request):
 
     form = ExecuteTaskForm(request.POST)
     if not form.is_valid():
-        logger.warning("Invalid ExecuteTaskForm submission: %s", form.errors)
+        logger.warning("Invalid ExecuteTaskForm submission: %s", form.errors.as_json())
         return HttpResponseBadRequest()
 
     execution_id = form.cleaned_data["execution_id"]
@@ -53,7 +53,7 @@ def schedule_task_view(request):
 
     form = ScheduleTaskForm(request.POST)
     if not form.is_valid():
-        logger.warning("Invalid ScheduleTaskForm submission: %s", form.errors)
+        logger.warning("Invalid ScheduleTaskForm submission: %s", form.errors.as_json())
         return HttpResponseBadRequest()
 
     task_id = form.cleaned_data["task_id"]
