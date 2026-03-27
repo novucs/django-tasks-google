@@ -9,14 +9,21 @@ from django_tasks_google.scheduler import delete_cloud_scheduler_job_if_exists
 class ScheduledTaskAdmin(admin.ModelAdmin):
     form = ScheduledTaskAdminForm
 
-    list_display = ("name", "state", "schedule", "time_zone", "backend")
-    list_filter = ("state", "backend", "time_zone")
+    list_display = ("name", "state", "schedule", "time_zone", "backend_alias")
+    list_filter = ("state", "backend_alias", "time_zone")
     search_fields = ("name", "module_path", "description")
     fieldsets = (
         ("General Info", {"fields": ("name", "description", "state")}),
         (
             "Execution Details",
-            {"fields": ("task_selector", "module_path", "backend", "takes_context")},
+            {
+                "fields": (
+                    "task_selector",
+                    "module_path",
+                    "backend_alias",
+                    "takes_context",
+                )
+            },
         ),
         (
             "Parameters",

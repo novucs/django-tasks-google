@@ -71,7 +71,7 @@ class ScheduledTaskAdminForm(forms.ModelForm):
                 attrs={"style": "width: 400px;", "placeholder": "task-name-here"}
             ),
             "module_path": forms.TextInput(attrs={"style": "width: 400px;"}),
-            "backend": forms.TextInput(attrs={"style": "width: 200px;"}),
+            "backend_alias": forms.TextInput(attrs={"style": "width: 200px;"}),
             "schedule": forms.TextInput(attrs={"placeholder": "*/5 * * * *"}),
             "time_zone": forms.TextInput(attrs={"placeholder": "UTC"}),
             "cloud_scheduler_job_name": forms.TextInput(
