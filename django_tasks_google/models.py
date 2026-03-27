@@ -48,7 +48,8 @@ class ScheduledTask(models.Model):
 
     @property
     def backend(self):
-        return task_backends[self.backend_alias]
+        default = import_string(self.module_path)
+        return task_backends[self.backend_alias or default.backend]
 
     @property
     def task(self) -> Task:
