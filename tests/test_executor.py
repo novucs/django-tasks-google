@@ -65,10 +65,10 @@ def test_try_acquire_execution_lease_raises_for_active_lease(execution):
 def test_finalize_success_updates_execution_when_worker_matches(execution):
     worker_id, _ = try_acquire_execution_lease(execution.pk)
 
-    updated = finalize_success(execution.pk, worker_id, {"ok": True})
+    task_result = finalize_success(execution.pk, worker_id, {"ok": True})
     execution.refresh_from_db()
 
-    assert updated is True
+    assert task_result is not None
     assert execution.status == TaskResultStatus.SUCCESSFUL
     assert execution.return_value == {"ok": True}
     assert execution.finished_at is not None
@@ -81,10 +81,10 @@ def test_finalize_failure_records_error_and_clears_lease(execution):
     worker_id, _ = try_acquire_execution_lease(execution.pk)
     error = RuntimeError("boom")
 
-    updated = finalize_failure(execution.pk, worker_id, error)
+    task_result = finalize_failure(execution.pk, worker_id, error)
     execution.refresh_from_db()
 
-    assert updated is True
+    assert task_result is not None
     assert execution.status == TaskResultStatus.FAILED
     assert execution.finished_at is not None
     assert execution.lease_worker_id is None

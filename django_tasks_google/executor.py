@@ -58,19 +58,18 @@ def execute_task(execution_id):
             args = (TaskContext(task_result=execution.task_result), *args)
         task_started.send(sender=type(backend), task_result=execution.task_result)
         return_value = execution.task.call(*args, **execution.kwargs)
-        updated = finalize_success(execution_id, worker_id, return_value)
-        if not updated:
+        task_result = finalize_success(execution_id, worker_id, return_value)
+        if not task_result:
             return False
-        task_finished.send(sender=type(backend), task_result=execution.task_result)
+        task_finished.send(sender=type(backend), task_result=task_result)
         logger.info(f"{execution} completed")
         return False
-
-    except BaseException as e:
+    except Exception as e:
         logger.exception(f"An error occurred during {execution}")
-        updated = finalize_failure(execution_id, worker_id, e)
-        if not updated:
+        task_result = finalize_failure(execution_id, worker_id, e)
+        if not task_result:
             return False
-        task_finished.send(sender=type(backend), task_result=execution.task_result)
+        task_finished.send(sender=type(backend), task_result=task_result)
         # Only attempt to retry if we held the lease.
         return e.retryable if isinstance(e, TaskError) else True
 
@@ -155,7 +154,7 @@ def finalize_success(execution_id, worker_id, return_value):
             or execution.status != TaskResultStatus.RUNNING
         ):
             logger.warning(f"{worker_id} unable to update {execution}")
-            return False
+            return None
 
         execution.finished_at = timezone.now()
         execution.status = TaskResultStatus.SUCCESSFUL
@@ -171,7 +170,7 @@ def finalize_success(execution_id, worker_id, return_value):
                 "lease_expires_at",
             ]
         )
-        return True
+        return execution.task_result
 
 
 def finalize_failure(execution_id, worker_id, exception):
@@ -183,7 +182,7 @@ def finalize_failure(execution_id, worker_id, exception):
             or execution.status != TaskResultStatus.RUNNING
         ):
             logger.warning(f"{worker_id} unable to update {execution}")
-            return False
+            return None
 
         execution.finished_at = timezone.now()
         execution.status = TaskResultStatus.FAILED
@@ -199,4 +198,4 @@ def finalize_failure(execution_id, worker_id, exception):
                 "lease_expires_at",
             ]
         )
-        return True
+        return execution.task_result
