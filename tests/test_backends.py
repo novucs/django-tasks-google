@@ -4,6 +4,7 @@ from unittest.mock import patch
 import pytest
 from django.core.exceptions import ImproperlyConfigured
 from django.tasks import Task, task_backends
+from django.utils import timezone
 
 from django_tasks_google.backends import (
     CloudRunJobsBackend,
@@ -233,3 +234,77 @@ def test_cloud_run_enqueue_gcp_marks_failed_on_client_error():
     assert len(execution.errors) == 1
     assert execution.errors[0]["exception_class_path"].endswith("RuntimeError")
     send_mock.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_cloud_tasks_enqueue_gcp_builds_expected_http_request(
+    django_capture_on_commit_callbacks,
+):
+    backend = task_backends["default"]
+    execution = TaskExecution.objects.create(
+        module_path="tests.fake_tasks.sample_task",
+        backend_alias="default",
+        queue_name="default",
+        args=[],
+        kwargs={},
+    )
+
+    fake_cloud_task = type("CloudTask", (), {"name": "projects/p/tasks/t1"})()
+
+    with (
+        patch("google.cloud.tasks_v2.CloudTasksClient", autospec=True) as client_cls,
+        patch("django_tasks_google.backends.task_enqueued.send") as send_mock,
+        django_capture_on_commit_callbacks(execute=True),
+    ):
+        client = client_cls.return_value
+        client.create_task.return_value = fake_cloud_task
+
+        backend.enqueue_gcp(execution.pk)
+
+    execution.refresh_from_db()
+    assert execution.cloud_task_name == "projects/p/tasks/t1"
+
+    call_kwargs = client.create_task.call_args.kwargs
+    assert (
+        call_kwargs["parent"]
+        == "projects/test-project/locations/us-central1/queues/default"
+    )
+    task_proto = call_kwargs["task"]
+    assert task_proto.http_request.url == "https://example.com/tasks/execute/"
+    assert task_proto.http_request.headers["Content-Type"] == (
+        "application/x-www-form-urlencoded"
+    )
+    body = task_proto.http_request.body.decode()
+    assert f"execution_id={execution.pk}" in body
+    assert "backend=default" in body
+    assert (
+        task_proto.http_request.oidc_token.service_account_email
+        == "worker@example.iam.gserviceaccount.com"
+    )
+    assert task_proto.http_request.oidc_token.audience == "https://example.com"
+    send_mock.assert_called_once()
+
+
+@pytest.mark.django_db
+def test_cloud_tasks_enqueue_gcp_sets_schedule_time_for_run_after():
+    backend = task_backends["default"]
+    run_after = timezone.now() + timedelta(minutes=5)
+    execution = TaskExecution.objects.create(
+        module_path="tests.fake_tasks.sample_task",
+        backend_alias="default",
+        queue_name="default",
+        run_after=run_after,
+        args=[],
+        kwargs={},
+    )
+
+    fake_cloud_task = type("CloudTask", (), {"name": "projects/p/tasks/t2"})()
+
+    with patch("google.cloud.tasks_v2.CloudTasksClient", autospec=True) as client_cls:
+        client = client_cls.return_value
+        client.create_task.return_value = fake_cloud_task
+        backend.enqueue_gcp(execution.pk)
+
+    task_proto = client.create_task.call_args.kwargs["task"]
+    schedule_dt = task_proto.schedule_time
+    assert int(schedule_dt.timestamp()) == int(run_after.timestamp())

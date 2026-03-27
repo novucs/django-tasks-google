@@ -111,6 +111,46 @@ def test_sync_scheduled_task_creates_job_and_resumes_when_enabled():
 
 
 @pytest.mark.django_db
+def test_sync_scheduled_task_builds_expected_scheduler_http_target():
+    task = ScheduledTask.objects.create(
+        name="task-http",
+        schedule="*/5 * * * *",
+        module_path="tests.fake_tasks.sample_task",
+        backend_alias="default",
+        queue_name="default",
+        state=ScheduledTask.State.ENABLED,
+    )
+
+    with (
+        patch("django_tasks_google.scheduler.uuid.uuid4", return_value="fixed-key"),
+        patch("google.cloud.scheduler_v1.CloudSchedulerClient") as client_cls,
+    ):
+        client = client_cls.return_value
+        client.get_job.side_effect = NotFound("missing")
+        client.create_job.return_value = _FakeJob(_FakeJob.State.ENABLED)
+
+        sync_scheduled_task(task.pk)
+
+    call_kwargs = client.create_job.call_args.kwargs
+    assert call_kwargs["parent"] == "projects/test-project/locations/us-central1"
+    job = call_kwargs["job"]
+    assert job.name == "projects/test-project/locations/us-central1/jobs/task-http"
+    assert job.http_target.uri == "https://example.com/tasks/schedule/"
+    assert job.http_target.headers["Content-Type"] == (
+        "application/x-www-form-urlencoded"
+    )
+    body = job.http_target.body.decode()
+    assert f"task_id={task.pk}" in body
+    assert "backend=default" in body
+    assert "idempotency_key=fixed-key" in body
+    assert (
+        job.http_target.oidc_token.service_account_email
+        == "worker@example.iam.gserviceaccount.com"
+    )
+    assert job.http_target.oidc_token.audience == "https://example.com"
+
+
+@pytest.mark.django_db
 def test_sync_scheduled_task_updates_job_and_pauses_when_disabled():
     task = ScheduledTask.objects.create(
         name="task-d",
