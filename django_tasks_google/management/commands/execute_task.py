@@ -1,14 +1,16 @@
 from django.core.management.base import BaseCommand, CommandError
 
 from django_tasks_google.executor import execute_task
-from django_tasks_google.models import TaskExecution
 
 
 class Command(BaseCommand):
     def add_arguments(self, parser):
-        parser.add_argument("task_execution_id", type=str)
+        parser.add_argument("execution_id", type=str)
 
     def handle(self, *args, **options):
-        execution = TaskExecution.objects.get(pk=options["task_execution_id"])
-        if not execute_task(execution):
-            raise CommandError("Task execution failed")
+        execution_id = options["execution_id"]
+        should_retry = execute_task(execution_id)
+        if should_retry:
+            raise CommandError(
+                f"Task execution retry requested for execution_id={execution_id}"
+            )
