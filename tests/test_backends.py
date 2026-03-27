@@ -37,7 +37,10 @@ def test_backend_requires_project_id():
 def test_backend_rejects_heartbeat_interval_greater_than_timeout():
     with pytest.raises(
         ImproperlyConfigured,
-        match="heartbeat_interval_seconds cannot be greater than heartbeat_timeout_seconds",
+        match=(
+            "heartbeat_interval_seconds cannot be greater than "
+            "heartbeat_timeout_seconds"
+        ),
     ):
         CloudTasksBackend(
             "x",
@@ -154,7 +157,11 @@ def test_cloud_run_enqueue_gcp_sets_execution_name_on_success(
     fake_operation = type(
         "Operation",
         (),
-        {"metadata": type("Metadata", (), {"name": "projects/p/locations/l/executions/e1"})()},
+        {
+            "metadata": type(
+                "Metadata", (), {"name": "projects/p/locations/l/executions/e1"}
+            )()
+        },
     )()
 
     with (
@@ -168,7 +175,9 @@ def test_cloud_run_enqueue_gcp_sets_execution_name_on_success(
         backend.enqueue_gcp(execution.pk)
 
     execution.refresh_from_db()
-    assert execution.cloud_run_job_execution_name == "projects/p/locations/l/executions/e1"
+    assert (
+        execution.cloud_run_job_execution_name == "projects/p/locations/l/executions/e1"
+    )
     assert execution.status != "FAILED"
     assert execution.errors == []
 
@@ -208,7 +217,9 @@ def test_cloud_run_enqueue_gcp_marks_failed_on_client_error():
 
     with (
         patch("google.cloud.run_v2.JobsClient", autospec=True) as jobs_client_cls,
-        patch("django_tasks_google.backends.task_enqueued.send", autospec=True) as send_mock,
+        patch(
+            "django_tasks_google.backends.task_enqueued.send", autospec=True
+        ) as send_mock,
     ):
         jobs_client = jobs_client_cls.return_value
         jobs_client.run_job.side_effect = RuntimeError("gcp-failure")

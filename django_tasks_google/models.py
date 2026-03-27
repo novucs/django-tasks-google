@@ -168,7 +168,9 @@ class TaskExecution(models.Model):
     def append_error_entry(self, exception: BaseException):
         exception_type = type(exception)
         error_entry = {
-            "exception_class_path": f"{exception_type.__module__}.{exception_type.__qualname__}",
+            "exception_class_path": (
+                f"{exception_type.__module__}.{exception_type.__qualname__}"
+            ),
             "traceback": "".join(format_exception(exception)),
         }
         self.errors = [*(self.errors or []), error_entry]

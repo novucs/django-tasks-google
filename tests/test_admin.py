@@ -86,7 +86,9 @@ def test_save_model_warns_when_sync_fails(admin_site, http_request):
     form = SimpleNamespace()
 
     with (
-        patch.object(ScheduledTask, "sync", autospec=True, side_effect=ValueError("nope")),
+        patch.object(
+            ScheduledTask, "sync", autospec=True, side_effect=ValueError("nope")
+        ),
         patch.object(model_admin, "message_user", autospec=True) as message_user_mock,
     ):
         model_admin.save_model(http_request, task, form, change=False)

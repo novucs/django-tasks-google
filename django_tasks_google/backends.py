@@ -55,7 +55,8 @@ class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
             raise ImproperlyConfigured("location is required")
         if self.heartbeat_interval > self.heartbeat_timeout:
             raise ImproperlyConfigured(
-                "heartbeat_interval_seconds cannot be greater than heartbeat_timeout_seconds"
+                "heartbeat_interval_seconds cannot be greater than "
+                "heartbeat_timeout_seconds"
             )
         if not self.base_url:
             raise ImproperlyConfigured("base_url is required")

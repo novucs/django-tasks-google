@@ -3,11 +3,10 @@ from django.core.exceptions import ValidationError
 
 from django_tasks_google.forms import (
     ExecuteTaskForm,
-    ScheduleTaskForm,
     ScheduledTaskAdminForm,
+    ScheduleTaskForm,
     validate_backend,
 )
-
 
 pytestmark = pytest.mark.django_db
 
@@ -71,7 +70,9 @@ def test_scheduled_task_admin_form_requires_selector_or_module_path():
     form = ScheduledTaskAdminForm(data=_admin_form_data(module_path=""))
     assert not form.is_valid()
     assert "__all__" in form.errors
-    assert "Either task selector or module path must be set" in str(form.errors["__all__"])
+    assert "Either task selector or module path must be set" in str(
+        form.errors["__all__"]
+    )
 
 
 def test_scheduled_task_admin_form_rejects_invalid_name():

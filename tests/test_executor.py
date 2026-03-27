@@ -108,7 +108,9 @@ def test_execute_task_success_returns_false_and_persists_result(execution):
 
     with (
         patch.object(TaskExecution, "task", new_callable=PropertyMock) as task_prop,
-        patch.object(TaskExecution, "backend", new_callable=PropertyMock) as backend_prop,
+        patch.object(
+            TaskExecution, "backend", new_callable=PropertyMock
+        ) as backend_prop,
     ):
         task_prop.return_value = fake_task
         backend_prop.return_value = fake_backend
@@ -140,7 +142,9 @@ def test_execute_task_failure_returns_true_and_records_error(execution):
 
     with (
         patch.object(TaskExecution, "task", new_callable=PropertyMock) as task_prop,
-        patch.object(TaskExecution, "backend", new_callable=PropertyMock) as backend_prop,
+        patch.object(
+            TaskExecution, "backend", new_callable=PropertyMock
+        ) as backend_prop,
     ):
         task_prop.return_value = fake_task
         backend_prop.return_value = fake_backend

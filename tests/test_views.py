@@ -103,7 +103,11 @@ def test_schedule_task_view_skips_duplicate_idempotency(client):
         auth_mock.return_value = (True, None, None)
         response = client.post(
             "/schedule/",
-            data={"task_id": str(task.pk), "backend": "default", "idempotency_key": "k1"},
+            data={
+                "task_id": str(task.pk),
+                "backend": "default",
+                "idempotency_key": "k1",
+            },
             HTTP_AUTHORIZATION="Bearer token",
         )
     assert response.status_code == 204
@@ -126,7 +130,11 @@ def test_schedule_task_view_sets_idempotency_and_enqueues(client):
         auth_mock.return_value = (True, None, None)
         response = client.post(
             "/schedule/",
-            data={"task_id": str(task.pk), "backend": "default", "idempotency_key": "k-new"},
+            data={
+                "task_id": str(task.pk),
+                "backend": "default",
+                "idempotency_key": "k-new",
+            },
             HTTP_AUTHORIZATION="Bearer token",
         )
     task.refresh_from_db()

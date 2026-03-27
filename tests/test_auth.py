@@ -41,7 +41,10 @@ def test_handle_oidc_auth_rejects_google_auth_error():
 
 def test_handle_oidc_auth_rejects_unexpected_email():
     with patch("django_tasks_google.auth.id_token.verify_oauth2_token") as verify_mock:
-        verify_mock.return_value = {"email": "other@example.com", "email_verified": True}
+        verify_mock.return_value = {
+            "email": "other@example.com",
+            "email_verified": True,
+        }
         ok, status, error = handle_oidc_auth(
             _request("Bearer abc"), "aud", "svc@example.com"
         )

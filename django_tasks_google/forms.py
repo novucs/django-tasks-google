@@ -13,8 +13,8 @@ from django_tasks_google.models import ScheduledTask
 def validate_backend(backend):
     try:
         return task_backends[backend]
-    except InvalidTaskBackend:
-        raise forms.ValidationError("Invalid backend alias")
+    except InvalidTaskBackend as err:
+        raise forms.ValidationError("Invalid backend alias") from err
 
 
 class ExecuteTaskForm(forms.Form):
@@ -36,7 +36,10 @@ class ScheduleTaskForm(forms.Form):
 
 class ScheduledTaskAdminForm(forms.ModelForm):
     name = forms.CharField(
-        help_text="Name can only contain alphanumeric characters, hyphens '-' and underscores '_'"
+        help_text=(
+            "Name can only contain alphanumeric characters, hyphens '-' and "
+            "underscores '_'"
+        )
     )
     task_selector = forms.ChoiceField(
         choices=[],
@@ -47,7 +50,8 @@ class ScheduledTaskAdminForm(forms.ModelForm):
     schedule = forms.CharField(
         help_text=(
             "Schedules are specified using unix-cron format. "
-            'E.g. every minute: "* * * * *", every 3 hours: "0 */3 * * *", every Monday at 9:00: "0 9 * * 1".'
+            'E.g. every minute: "* * * * *", every 3 hours: "0 */3 * * *", '
+            'every Monday at 9:00: "0 9 * * 1".'
         )
     )
 
@@ -91,7 +95,8 @@ class ScheduledTaskAdminForm(forms.ModelForm):
         name = self.cleaned_data.get("name")
         if not re.match(r"^[a-zA-Z0-9_-]+$", name):
             raise ValidationError(
-                "Name can only contain alphanumeric characters, hyphens '-', and underscores '_'."
+                "Name can only contain alphanumeric characters, hyphens '-', "
+                "and underscores '_'."
             )
         return name
 
@@ -111,7 +116,8 @@ class ScheduledTaskAdminForm(forms.ModelForm):
             return {}
         if not isinstance(data, dict):
             raise ValidationError(
-                'Keyword arguments must be a valid JSON object (e.g., {"key": "value"}).'
+                "Keyword arguments must be a valid JSON object "
+                '(e.g., {"key": "value"}).'
             )
         return data
 
