@@ -48,6 +48,18 @@ def test_schedule_task_creates_model_and_syncs():
 
 
 @pytest.mark.django_db
+def test_schedule_task_leaves_backend_alias_empty_when_not_provided():
+    with patch.object(ScheduledTask, "sync", autospec=True):
+        scheduled = schedule_task(
+            sample_task,
+            "*/10 * * * *",
+        )
+
+    scheduled.refresh_from_db()
+    assert scheduled.backend_alias == ""
+
+
+@pytest.mark.django_db
 def test_sync_scheduled_tasks_calls_sync_per_row():
     a = ScheduledTask.objects.create(
         name="task-a",
