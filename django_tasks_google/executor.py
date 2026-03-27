@@ -21,6 +21,14 @@ class TaskLeaseConflict(Exception):
     pass
 
 
+class TaskError(Exception):
+    retryable = True
+
+
+class PermanentTaskError(TaskError):
+    retryable = False
+
+
 def execute_task(execution_id):
     try:
         worker_id, execution = try_acquire_execution_lease(execution_id)
@@ -63,7 +71,8 @@ def execute_task(execution_id):
         if not updated:
             return False
         task_finished.send(sender=type(backend), task_result=execution.task_result)
-        return True  # Only attempt to retry if we held the lease.
+        # Only attempt to retry if we held the lease.
+        return e.retryable if isinstance(e, TaskError) else True
 
     finally:
         if backend.heartbeat_enabled:
