@@ -1,34 +1,70 @@
 # django-tasks-google
 
-`django-tasks-google` connects Django's Task Framework to Google Cloud execution surfaces:
+Run Django tasks on Google Cloud using Cloud Tasks, Cloud Run Jobs, and Cloud Scheduler - without managing workers or
+leaving Django.
 
-- Cloud Tasks for async request-driven execution
-- Cloud Run Jobs for longer-running workloads
-- Cloud Scheduler for cron-style recurring task scheduling
+> Built on Django 6.0's Task Framework (`django.tasks`)
 
-It also includes task execution/scheduling HTTP views, admin tooling for
-scheduled jobs, and persisted execution metadata in Django models.
+## What this handles for you
 
-## Installation
+* **Execution routing**
+    * Cloud Tasks (async work)
+    * Cloud Run Jobs (long-running / batch jobs)
+    * Cloud Scheduler (cron)
+
+* **Execution state**
+    * Status, results, and errors persisted via `TaskExecution`
+
+* **Idempotency & de-duplication**
+    * Scheduler-triggered tasks include idempotency keys
+    * Lease-based execution prevents duplicate work during retries
+
+* **Failure handling**
+    * Heartbeats detect stalled executions
+    * Safe retry behavior across crashes and timeouts
+
+* **Admin & visibility**
+    * Manage scheduled tasks via Django admin
+
+## Who this is for
+
+This project is designed for teams who:
+
+* Are already on Google Cloud
+* Prefer fully managed infrastructure (no workers or brokers)
+* Want to use Django's built-in task framework
+
+## Install
 
 ```bash
 pip install django-tasks-google
 ```
 
-## Quick Start
+## The idea (30 seconds)
 
-### 1) Add the app
+1. Define a Django task
+2. Choose a backend (Cloud Tasks or Cloud Run Jobs)
+3. Call `.enqueue()`
+4. It runs on Google Cloud
+5. Results are stored in your database
+
+## Setup
+
+### Prerequisites
+
+* A Google Cloud project
+* Cloud Tasks / Cloud Run / Cloud Scheduler enabled
+* A service account with Cloud Run Invoker (`roles/run.invoker`) permissions
+
+### 1. Add the app
 
 ```python
 INSTALLED_APPS = [
-    # ...
     "django_tasks_google",
 ]
 ```
 
-### 2) Configure task backends
-
-Use Django `TASKS` settings for Cloud Tasks and/or Cloud Run Jobs.
+### 2. Configure backends
 
 ```python
 TASKS = {
@@ -44,7 +80,7 @@ TASKS = {
     },
     "jobs": {
         "BACKEND": "django_tasks_google.backends.CloudRunJobsBackend",
-        "QUEUES": ["my-cloud-run-job-name"],
+        "QUEUES": ["my-job"],
         "OPTIONS": {
             "project_id": "your-project-id",
             "location": "us-central1",
@@ -55,141 +91,185 @@ TASKS = {
 }
 ```
 
-Notes:
+> `QUEUES` maps to Cloud Tasks queues or Cloud Run Job names.
 
-- `base_url` is used to derive:
-  - execute endpoint: `<base_url>/execute/`
-  - schedule endpoint: `<base_url>/schedule/`
-- request auth is verified with OIDC token audience and service account email.
-- set `QUEUES` to `[]` when you want backend queue names to be validated lazily
-  (for example, when queue/job names are created or managed outside Django).
+#### Local development
 
-### Queue and resource name mapping
+For local development, you can run tasks synchronously without Google Cloud by using Django’s built-in backend:
 
-- `CloudTasksBackend`: task `queue_name` maps to Cloud Tasks queue name.
-- `CloudRunJobsBackend`: task `queue_name` maps to Cloud Run Job name.
-- `ScheduledTask.name`: maps to Cloud Scheduler job name.
+```python
+TASKS = {
+    "default": {
+        "BACKEND": "django.tasks.backends.ImmediateBackend",
+    },
+    "jobs": {
+        "BACKEND": "django.tasks.backends.ImmediateBackend",
+    },
+}
+```
 
-### 3) Mount URLs
+Tasks will execute immediately in-process when calling `.enqueue()`, making it easy to test and debug without external
+services.
+
+### 3. Mount URLs
 
 ```python
 from django.urls import include, path
 
 urlpatterns = [
-    # ...
     path("tasks/", include("django_tasks_google.urls")),
 ]
 ```
 
-### 4) Define tasks
+## Usage
+
+### Define a task
 
 ```python
 from django.tasks import task
 
 
-@task(queue_name="default")
+@task(queue_name="default")  # Cloud Tasks queue
 def send_notification(user_id: int):
-    # ...
     return {"user_id": user_id, "status": "sent"}
+```
 
+### Enqueue
 
-@task(backend="jobs", queue_name="my-cloud-run-job-name")
+```python
+result = send_notification.enqueue(user_id=1)
+```
+
+### Inspect result
+
+```python
+result.refresh()
+print(result.status)
+print(result.return_value)
+print(result.errors)
+```
+
+## Cloud Run Jobs (long-running work)
+
+```python
+@task(backend="jobs", queue_name="my-job")  # Cloud Run Job
 def recompute_analytics():
-    # ...
     return {"ok": True}
 ```
 
-Task definitions must use JSON-serializable values for all `args`, `kwargs`, and
-return values.
-
-### 5) Enqueue and inspect results
+Cancel a running execution:
 
 ```python
 from django_tasks_google.models import TaskExecution
 
-result = send_notification.enqueue(user_id=1)
-result.refresh()
-
-print(result.status)
-print(result.return_value)
-```
-
-### 6) Cancel a running Cloud Run Job execution
-
-```python
-from django_tasks_google.models import TaskExecution
-
-result = recompute_analytics.enqueue()
 execution = TaskExecution.objects.get(pk=result.id)
-
-# Only Cloud Run Job executions can be cancelled.
 execution.cancel()
 ```
 
-## Cloud Scheduler Support
+> Only Cloud Run Job executions can be cancelled.
 
-Cloud Scheduler is model-driven in this package using `ScheduledTask` and
-`schedule_task()`.
+## Scheduling (cron)
 
 ```python
 from django_tasks_google.scheduler import schedule_task
-from myapp.tasks import send_notification
 
-schedule_task(
+scheduled_task = schedule_task(
     send_notification,
     "0 */3 * * *",
-    name="send-notification-every-3-hours",
+    name="send-every-3-hours",
     args=[1],
 )
 ```
 
-This creates/updates scheduler jobs and routes execution through
-`/tasks/schedule/`.
+This creates a `ScheduledTask` and syncs it to Cloud Scheduler.
 
-You can also manage scheduled entries from Django admin.
+You can also manage scheduled tasks via Django admin.
 
-## Data Model
+⚠️ Deleting a ScheduledTask does not automatically remove the Cloud Scheduler job. Use:
 
-- `TaskExecution`: persisted execution metadata and return/error history for
-Cloud Tasks and Cloud Run Jobs.
-- `ScheduledTask`: persisted schedule definitions for Cloud Scheduler backed
-recurring tasks.
+```python
+from django_tasks_google.scheduler import delete_cloud_scheduler_job_if_exists
 
-## Reliability and idempotency
+delete_cloud_scheduler_job_if_exists(scheduled_task.cloud_scheduler_job_name)
+scheduled_task.delete()
+```
 
-- task execution uses a lease-based worker model with heartbeats to reduce
-  duplicate processing during retries, crashes, or slow workers.
-- scheduler-triggered tasks include idempotency keys to prevent duplicate
-  enqueue/execute handling.
+## How scheduling works
+
+1. **Cloud Scheduler** calls your app (`/tasks/schedule/`)
+2. Your app calls `task.enqueue()`
+3. The task runs via the configured backend
+
+All executions go through the same pipeline, so scheduling behaves the same as manual enqueueing.
+
+## Data model
+
+* `TaskExecution` – execution metadata, status, results/errors
+* `ScheduledTask` – cron definitions synced with Cloud Scheduler
+
+## Configuration
+
+### Backend `OPTIONS`
+
+| Option                                | Default                                   | Applies to          | Description                                     |
+|---------------------------------------|-------------------------------------------|---------------------|-------------------------------------------------|
+| `project_id` **(Required)**           | -                                         | All                 | GCP project ID                                  |
+| `location` **(Required)**             | -                                         | All                 | GCP region                                      |
+| `base_url` **(Required)**             | -                                         | All                 | Base URL for task endpoints                     |
+| `oidc_service_account` **(Required)** | -                                         | All                 | Service account used for authenticated requests |
+| `oidc_audience`                       | Derived from `base_url`                   | All                 | OIDC audience override                          |
+| `execute_url`                         | `<base_url>/execute/`                     | All                 | Override execute endpoint                       |
+| `schedule_url`                        | `<base_url>/schedule/`                    | All                 | Override schedule endpoint                      |
+| `heartbeat_enabled`                   | `True`                                    | All                 | Enable heartbeat tracking                       |
+| `heartbeat_interval_seconds`          | 10                                        | All                 | Interval between heartbeats                     |
+| `heartbeat_timeout_seconds`           | 30                                        | All                 | Time before execution is considered stalled     |
+| `heartbeat_join_timeout_seconds`      | 5                                         | All                 | Time to wait for heartbeat shutdown             |
+| `command`                             | `["python", "manage.py", "execute_task"]` | Cloud Run Jobs only | Command executed by the job                     |
+
+**Constraint:**
+`heartbeat_interval_seconds` must be ≤ `heartbeat_timeout_seconds`.
 
 ## Management Commands
 
-- `execute_task <execution_id>`: executes a leased task execution.
-- `sync_scheduled_tasks`: syncs all `ScheduledTask` rows to Cloud Scheduler.
+### `sync_scheduled_tasks`
+
+**Ensures your Django `ScheduledTask` models exist in Google Cloud Scheduler.**
+
+While the Django admin and `schedule_task` function handle syncing automatically, run this command to force a
+resync - ideal for initial deployments or after manual database edits.
+
+```bash
+python manage.py sync_scheduled_tasks
+```
+
+* **Creates:** Adds any missing tasks to GCP.
+* **Updates:** Syncs cron expressions and arguments for existing tasks.
+* **Note:** This command **does not delete** jobs from GCP that are missing from your database, preventing accidental
+  data loss in shared GCP projects.
+
+### `execute_task`
+
+**The execution engine for Cloud Run Jobs.**
+
+You won't typically run this manually; it is the command Google Cloud invokes to process long-running work.
+
+```bash
+python manage.py execute_task <execution_id>
+```
+
+* **Internal logic:** Manages the heartbeat, runs the task, and records the result.
+* **Debugging:** Use this to re-run a specific `execution_id` locally for troubleshooting.
 
 ## Development
 
-Install git hooks:
-
 ```bash
 uv run pre-commit install
-```
-
-Run checks locally:
-
-```bash
 uv run pre-commit run --all-files
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest
 ```
 
-To verify migrations:
-
-```bash
-DJANGO_SETTINGS_MODULE=tests.settings PYTHONPATH=. uv run python -m django makemigrations django_tasks_google --check --dry-run
-```
-
 ## References
 
-- [Django Task Framework docs](https://docs.djangoproject.com/en/6.0/topics/tasks/)
+* [https://docs.djangoproject.com/en/6.0/topics/tasks/](https://docs.djangoproject.com/en/6.0/topics/tasks/)
