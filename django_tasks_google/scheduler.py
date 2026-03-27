@@ -31,7 +31,7 @@ def schedule_task(
                 ScheduledTask.State.ENABLED if enabled else ScheduledTask.State.DISABLED
             ),
             module_path=task.module_path,
-            backend_alias=task_backends[backend].alias,
+            backend_alias=task_backends[backend].alias if backend else "",
             queue_name=queue_name,
             takes_context=takes_context,
             args=args or [],
