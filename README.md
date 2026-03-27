@@ -99,6 +99,9 @@ def recompute_analytics():
     return {"ok": True}
 ```
 
+Task definitions must use JSON-serializable values for all `args`, `kwargs`, and
+return values.
+
 ### 5) Enqueue and inspect results
 
 ```python
