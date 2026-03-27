@@ -88,7 +88,7 @@ class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
                 kwargs=dict(kwargs),
             )
             task_result = execution.task_result
-            transaction.on_commit(lambda: self.enqueue_gcp(execution.pk))
+            transaction.on_commit(partial(self.enqueue_gcp, execution.pk))
         return task_result
 
     @abstractmethod
@@ -150,7 +150,9 @@ class CloudRunJobsBackend(DjangoTasksGoogleBackend):
             execution.cloud_run_job_execution_name = operation.metadata.name
             execution.save(update_fields=["cloud_run_job_execution_name"])
             transaction.on_commit(
-                partial(task_enqueued.send, type(self), execution.task_result)
+                partial(
+                    task_enqueued.send, type(self), task_result=execution.task_result
+                )
             )
 
 
@@ -209,5 +211,7 @@ class CloudTasksBackend(DjangoTasksGoogleBackend):
             execution.cloud_task_name = cloud_task.name
             execution.save(update_fields=["cloud_task_name"])
             transaction.on_commit(
-                partial(task_enqueued.send, type(self), execution.task_result)
+                partial(
+                    task_enqueued.send, type(self), task_result=execution.task_result
+                )
             )
