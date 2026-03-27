@@ -10,7 +10,7 @@ from django.tasks import InvalidTaskBackend, task_backends
 from django_tasks_google.models import ScheduledTask
 
 
-def validate_backend(backend):
+def validate_backend(backend: str):
     try:
         return task_backends[backend]
     except InvalidTaskBackend as err:
@@ -87,7 +87,7 @@ class ScheduledTaskAdminForm(forms.ModelForm):
         selector_val = cleaned_data.get("task_selector")
         if selector_val:
             cleaned_data["module_path"] = selector_val
-        if not cleaned_data["module_path"]:
+        if not cleaned_data.get("module_path"):
             raise ValidationError("Either task selector or module path must be set")
         return cleaned_data
 

@@ -67,6 +67,9 @@ def test_handle_oidc_auth_rejects_unverified_email():
 def test_handle_oidc_auth_returns_success_for_verified_expected_email():
     with patch("django_tasks_google.auth.id_token.verify_oauth2_token") as verify_mock:
         verify_mock.return_value = {"email": "svc@example.com", "email_verified": True}
-        ok, status = handle_oidc_auth(_request("Bearer abc"), "aud", "svc@example.com")
+        ok, status, error = handle_oidc_auth(
+            _request("Bearer abc"), "aud", "svc@example.com"
+        )
     assert ok is True
     assert status is None
+    assert error is None
