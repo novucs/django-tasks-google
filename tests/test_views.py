@@ -68,8 +68,10 @@ def test_schedule_task_view_returns_auth_status_on_auth_failure(client):
         auth_mock.return_value = (False, 403, "bad-caller")
         response = client.post(
             "/schedule/",
-            data={"task_id": "1", "backend": "default", "idempotency_key": "k1"},
+            data={"task_id": "1", "backend": "default"},
             HTTP_AUTHORIZATION="Bearer token",
+            HTTP_X_CLOUDSCHEDULER_JOBNAME="projects/test/locations/us-central1/jobs/test-job",
+            HTTP_X_CLOUDSCHEDULER_SCHEDULETIME="2026-03-27T12:00:00Z",
         )
     assert response.status_code == 403
 
@@ -80,21 +82,26 @@ def test_schedule_task_view_returns_404_for_missing_task(client):
         auth_mock.return_value = (True, None, None)
         response = client.post(
             "/schedule/",
-            data={"task_id": "999", "backend": "default", "idempotency_key": "k1"},
+            data={"task_id": "999", "backend": "default"},
             HTTP_AUTHORIZATION="Bearer token",
+            HTTP_X_CLOUDSCHEDULER_JOBNAME="projects/test/locations/us-central1/jobs/test-job",
+            HTTP_X_CLOUDSCHEDULER_SCHEDULETIME="2026-03-27T12:00:00Z",
         )
     assert response.status_code == 404
 
 
 @pytest.mark.django_db
 def test_schedule_task_view_skips_duplicate_idempotency(client):
+    job_name = "projects/test/locations/us-central1/jobs/test-job"
+    schedule_time = "2026-03-27T12:00:00Z"
+    idempotency_key = f"{job_name}:{schedule_time}"
     task = ScheduledTask.objects.create(
         name="task-v1",
         schedule="0 * * * *",
         module_path="tests.fake_tasks.sample_task",
         backend_alias="default",
         queue_name="default",
-        idempotency_key="k1",
+        idempotency_key=idempotency_key,
     )
     with (
         patch("django_tasks_google.auth.handle_oidc_auth") as auth_mock,
@@ -106,9 +113,10 @@ def test_schedule_task_view_skips_duplicate_idempotency(client):
             data={
                 "task_id": str(task.pk),
                 "backend": "default",
-                "idempotency_key": "k1",
             },
             HTTP_AUTHORIZATION="Bearer token",
+            HTTP_X_CLOUDSCHEDULER_JOBNAME=job_name,
+            HTTP_X_CLOUDSCHEDULER_SCHEDULETIME=schedule_time,
         )
     assert response.status_code == 204
     enqueue_mock.assert_not_called()
@@ -116,6 +124,9 @@ def test_schedule_task_view_skips_duplicate_idempotency(client):
 
 @pytest.mark.django_db
 def test_schedule_task_view_sets_idempotency_and_enqueues(client):
+    job_name = "projects/test/locations/us-central1/jobs/test-job"
+    schedule_time = "2026-03-27T12:00:00Z"
+    expected_idempotency_key = f"{job_name}:{schedule_time}"
     task = ScheduledTask.objects.create(
         name="task-v2",
         schedule="0 * * * *",
@@ -133,11 +144,12 @@ def test_schedule_task_view_sets_idempotency_and_enqueues(client):
             data={
                 "task_id": str(task.pk),
                 "backend": "default",
-                "idempotency_key": "k-new",
             },
             HTTP_AUTHORIZATION="Bearer token",
+            HTTP_X_CLOUDSCHEDULER_JOBNAME=job_name,
+            HTTP_X_CLOUDSCHEDULER_SCHEDULETIME=schedule_time,
         )
     task.refresh_from_db()
     assert response.status_code == 204
-    assert task.idempotency_key == "k-new"
+    assert task.idempotency_key == expected_idempotency_key
     enqueue_mock.assert_called_once_with(task)

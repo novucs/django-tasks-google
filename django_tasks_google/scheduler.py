@@ -1,4 +1,3 @@
-import uuid
 from urllib.parse import urlencode
 
 from django.db import transaction
@@ -59,7 +58,6 @@ def sync_scheduled_task(task_id: int):
     payload = {
         "task_id": str(task_id),
         "backend": task.backend.alias,
-        "idempotency_key": str(uuid.uuid4()),
     }
     job = scheduler_v1.Job(
         name=job_name,  # type: ignore

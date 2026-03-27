@@ -28,7 +28,6 @@ class ExecuteTaskForm(forms.Form):
 class ScheduleTaskForm(forms.Form):
     task_id = forms.CharField()
     backend = forms.CharField()
-    idempotency_key = forms.CharField()
 
     def clean_backend(self):
         return validate_backend(self.cleaned_data["backend"])

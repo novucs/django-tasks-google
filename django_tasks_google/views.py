@@ -58,13 +58,22 @@ def schedule_task_view(request):
 
     task_id = form.cleaned_data["task_id"]
     backend = form.cleaned_data["backend"]
-    idempotency_key = form.cleaned_data["idempotency_key"]
     authenticated, auth_status, auth_error = handle_oidc_auth(
         request, backend.oidc_audience, backend.oidc_service_account
     )
     if not authenticated:
         logger.warning("Failed to auth scheduling of %s: %s", task_id, auth_error)
         return HttpResponse(status=auth_status)
+
+    job_name = request.headers.get("X-CloudScheduler-JobName")
+    schedule_time = request.headers.get("X-CloudScheduler-ScheduleTime", "")
+    if not job_name:
+        logger.warning("X-CloudScheduler-JobName header was not set")
+        return HttpResponseBadRequest()
+    if not schedule_time:
+        logger.warning("X-CloudScheduler-ScheduleTime header was not set")
+        return HttpResponseBadRequest()
+    idempotency_key = f"{job_name}:{schedule_time}"
 
     try:
         task = ScheduledTask.objects.select_for_update().get(pk=task_id)

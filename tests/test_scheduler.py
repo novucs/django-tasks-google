@@ -121,10 +121,7 @@ def test_sync_scheduled_task_builds_expected_scheduler_http_target():
         state=ScheduledTask.State.ENABLED,
     )
 
-    with (
-        patch("django_tasks_google.scheduler.uuid.uuid4", return_value="fixed-key"),
-        patch("google.cloud.scheduler_v1.CloudSchedulerClient") as client_cls,
-    ):
+    with patch("google.cloud.scheduler_v1.CloudSchedulerClient") as client_cls:
         client = client_cls.return_value
         client.get_job.side_effect = NotFound("missing")
         client.create_job.return_value = _FakeJob(_FakeJob.State.ENABLED)
@@ -142,7 +139,6 @@ def test_sync_scheduled_task_builds_expected_scheduler_http_target():
     body = job.http_target.body.decode()
     assert f"task_id={task.pk}" in body
     assert "backend=default" in body
-    assert "idempotency_key=fixed-key" in body
     assert (
         job.http_target.oidc_token.service_account_email
         == "worker@example.iam.gserviceaccount.com"
