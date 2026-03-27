@@ -107,9 +107,20 @@ from django_tasks_google.models import TaskExecution
 result = send_notification.enqueue(user_id=1)
 result.refresh()
 
+print(result.status)
+print(result.return_value)
+```
+
+### 6) Cancel a running Cloud Run Job execution
+
+```python
+from django_tasks_google.models import TaskExecution
+
+result = recompute_analytics.enqueue()
 execution = TaskExecution.objects.get(pk=result.id)
-print(execution.status)
-print(execution.return_value)
+
+# Only Cloud Run Job executions can be cancelled.
+execution.cancel()
 ```
 
 ## Cloud Scheduler Support
