@@ -108,6 +108,13 @@ class CloudRunJobsBackend(DjangoTasksGoogleBackend):
     supports_get_result = True
     supports_priority = False
 
+    def __init__(self, alias, params):
+        super().__init__(alias, params)
+        self.command = self.options.get(
+            "command",
+            ["python", "manage.py", "execute_task"],
+        )
+
     def enqueue_gcp(self, execution_id):
         from google.cloud import run_v2
 
@@ -123,12 +130,7 @@ class CloudRunJobsBackend(DjangoTasksGoogleBackend):
                 overrides=run_v2.RunJobRequest.Overrides(  # type: ignore
                     container_overrides=[  # type: ignore
                         run_v2.RunJobRequest.Overrides.ContainerOverride(
-                            args=[  # type: ignore
-                                "python",
-                                "manage.py",
-                                "execute_task",
-                                str(execution.pk),
-                            ]
+                            args=[*self.command, str(execution.pk)]  # type: ignore
                         )
                     ]
                 ),
