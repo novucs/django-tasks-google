@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import logging
 from traceback import format_exception
 
 from django.db import models, transaction
@@ -12,6 +15,8 @@ from django.tasks import (
 from django.tasks.base import DEFAULT_TASK_PRIORITY, TaskError
 from django.utils import timezone
 from django.utils.module_loading import import_string
+
+logger = logging.getLogger("django_tasks_google")
 
 
 class ScheduledTask(models.Model):
@@ -98,6 +103,7 @@ class TaskExecution(models.Model):
     cancelled_at = models.DateTimeField(null=True)
     cloud_run_job_execution_name = models.TextField(null=True, unique=True)
     cloud_task_name = models.TextField(null=True, unique=True)
+    max_attempts = models.IntegerField(null=True)
 
     lease_worker_id = models.TextField(null=True)
     lease_expires_at = models.DateTimeField(null=True)
@@ -109,7 +115,15 @@ class TaskExecution(models.Model):
 
     @property
     def backend(self):
-        return task_backends[self.backend_alias]
+        from django_tasks_google.backends import DjangoTasksGoogleBackend
+
+        backend = task_backends[self.backend_alias]
+        if not isinstance(backend, DjangoTasksGoogleBackend):
+            raise TypeError(
+                f"Backend '{self.backend_alias}' must be an instance of "
+                f"DjangoTasksGoogleBackend, not {type(backend).__name__}."
+            )
+        return backend
 
     @property
     def task(self) -> Task:
@@ -151,6 +165,10 @@ class TaskExecution(models.Model):
             for error in self.errors
         ]
 
+    @property
+    def is_finished(self):
+        return self.status in (TaskResultStatus.SUCCESSFUL, TaskResultStatus.FAILED)
+
     def cancel(self, force=False):
         if force and not self.cloud_run_job_execution_name:
             raise NotImplementedError("Only Cloud Run Jobs may be forcibly cancelled")
@@ -189,3 +207,13 @@ class TaskExecution(models.Model):
             "traceback": "".join(format_exception(exception)),
         }
         self.errors = [*(self.errors or []), error_entry]
+
+        max_history_entries = self.backend.max_history_entries
+        if len(self.errors) > max_history_entries:
+            logger.warning(
+                "Task id=%s path=%s clipping errors to the last %s",
+                self.pk,
+                self.module_path,
+                max_history_entries,
+            )
+            self.errors = self.errors[-max_history_entries:]

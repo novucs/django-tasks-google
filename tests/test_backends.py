@@ -166,6 +166,7 @@ def test_cloud_run_enqueue_gcp_sets_execution_name_on_success(
     )()
 
     with (
+        patch.object(backend, "get_max_attempts_with_cache", return_value=3),
         patch("google.cloud.run_v2.JobsClient", autospec=True) as jobs_client_cls,
         patch("django_tasks_google.backends.task_enqueued.send_robust") as send_mock,
         django_capture_on_commit_callbacks(execute=True),
@@ -179,6 +180,7 @@ def test_cloud_run_enqueue_gcp_sets_execution_name_on_success(
     assert (
         execution.cloud_run_job_execution_name == "projects/p/locations/l/executions/e1"
     )
+    assert execution.max_attempts == 3
     assert execution.status != "FAILED"
     assert execution.errors == []
 
@@ -217,6 +219,7 @@ def test_cloud_run_enqueue_gcp_marks_failed_on_client_error():
     )
 
     with (
+        patch.object(backend, "get_max_attempts_with_cache", return_value=3),
         patch("google.cloud.run_v2.JobsClient", autospec=True) as jobs_client_cls,
         patch("django_tasks_google.backends.logger.exception") as log_exception_mock,
         patch(
@@ -252,6 +255,7 @@ def test_cloud_tasks_enqueue_gcp_builds_expected_http_request(
     fake_cloud_task = type("CloudTask", (), {"name": "projects/p/tasks/t1"})()
 
     with (
+        patch.object(backend, "get_max_attempts_with_cache", return_value=5),
         patch("google.cloud.tasks_v2.CloudTasksClient", autospec=True) as client_cls,
         patch("django_tasks_google.backends.task_enqueued.send_robust") as send_mock,
         django_capture_on_commit_callbacks(execute=True),
@@ -263,6 +267,7 @@ def test_cloud_tasks_enqueue_gcp_builds_expected_http_request(
 
     execution.refresh_from_db()
     assert execution.cloud_task_name == "projects/p/tasks/t1"
+    assert execution.max_attempts == 5
 
     call_kwargs = client.create_task.call_args.kwargs
     assert (
@@ -300,7 +305,10 @@ def test_cloud_tasks_enqueue_gcp_sets_schedule_time_for_run_after():
 
     fake_cloud_task = type("CloudTask", (), {"name": "projects/p/tasks/t2"})()
 
-    with patch("google.cloud.tasks_v2.CloudTasksClient", autospec=True) as client_cls:
+    with (
+        patch.object(backend, "get_max_attempts_with_cache", return_value=5),
+        patch("google.cloud.tasks_v2.CloudTasksClient", autospec=True) as client_cls,
+    ):
         client = client_cls.return_value
         client.create_task.return_value = fake_cloud_task
         backend.enqueue_gcp(execution.pk)

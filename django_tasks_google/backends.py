@@ -4,6 +4,7 @@ from datetime import timedelta
 from functools import partial
 from urllib.parse import urlencode, urlparse
 
+from django.core.cache import InvalidCacheBackendError, caches
 from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
 from django.tasks import TaskResultStatus
@@ -30,6 +31,9 @@ class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
         super().__init__(alias, params)
         self.project_id = self.options.get("project_id")
         self.location = self.options.get("location")
+        self.base_url = self.options.get("base_url")
+        self.oidc_service_account = self.options.get("oidc_service_account")
+        self.run_once = self.options.get("run_once", False)
         self.heartbeat_enabled = self.options.get(
             "heartbeat_enabled", DEFAULT_HEARTBEAT_ENABLED
         )
@@ -48,8 +52,6 @@ class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
                 "heartbeat_join_timeout_seconds", DEFAULT_HEARTBEAT_JOIN_TIMEOUT_SECONDS
             )
         )
-        self.base_url = self.options.get("base_url")
-        self.oidc_service_account = self.options.get("oidc_service_account")
 
         if not self.project_id:
             raise ImproperlyConfigured("project_id is required")
@@ -73,6 +75,10 @@ class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
         self.oidc_audience = self.options.get(
             "oidc_audience", get_oidc_audience(self.base_url)
         )
+        self.max_history_entries = self.options.get("max_history_entries", 100)
+        self.cache_alias = self.options.get("cache_alias", "default")
+        self.cache_prefix = self.options.get("cache_prefix", "django-tasks-google")
+        self.cache_ttl_max_attempts = self.options.get("cache_ttl_max_attempts", 600)
 
     def enqueue(self, task, args, kwargs):
         self.validate_task(task)
@@ -101,6 +107,24 @@ class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
         except TaskExecution.DoesNotExist:
             return None
 
+    @abstractmethod
+    def get_max_attempts(self, queue_name):
+        pass
+
+    def get_max_attempts_with_cache(self, queue_name):
+        if self.cache_ttl_max_attempts <= 0:
+            return self.get_max_attempts(queue_name)
+        try:
+            cache = caches[self.cache_alias]
+        except InvalidCacheBackendError:
+            return self.get_max_attempts(queue_name)
+        cache_key = f"{self.cache_prefix}:max_attempts:{queue_name}"
+        value = cache.get(cache_key)
+        if value is None:
+            value = self.get_max_attempts(queue_name)
+            cache.set(cache_key, value, self.cache_ttl_max_attempts)
+        return value
+
 
 class CloudRunJobsBackend(DjangoTasksGoogleBackend):
     supports_defer = False
@@ -125,8 +149,13 @@ class CloudRunJobsBackend(DjangoTasksGoogleBackend):
         with transaction.atomic():
             execution = TaskExecution.objects.select_for_update().get(pk=execution_id)
             client = run_v2.JobsClient()
+            job_path = (
+                f"projects/{self.project_id}/"
+                f"locations/{self.location}/"
+                f"jobs/{execution.queue_name}"
+            )
             request = run_v2.RunJobRequest(
-                name=f"projects/{self.project_id}/locations/{self.location}/jobs/{execution.queue_name}",  # type: ignore
+                name=job_path,  # type: ignore
                 overrides=run_v2.RunJobRequest.Overrides(  # type: ignore
                     container_overrides=[  # type: ignore
                         run_v2.RunJobRequest.Overrides.ContainerOverride(
@@ -136,6 +165,7 @@ class CloudRunJobsBackend(DjangoTasksGoogleBackend):
                 ),
             )
             try:
+                max_attempts = self.get_max_attempts_with_cache(execution.queue_name)
                 operation = client.run_job(request=request)
             except Exception as err:
                 logger.exception(
@@ -148,7 +178,10 @@ class CloudRunJobsBackend(DjangoTasksGoogleBackend):
                 execution.save(update_fields=["status", "errors"])
                 return
             execution.cloud_run_job_execution_name = operation.metadata.name
-            execution.save(update_fields=["cloud_run_job_execution_name"])
+            execution.max_attempts = max_attempts
+            execution.save(
+                update_fields=["cloud_run_job_execution_name", "max_attempts"]
+            )
             transaction.on_commit(
                 partial(
                     task_enqueued.send_robust,
@@ -156,6 +189,16 @@ class CloudRunJobsBackend(DjangoTasksGoogleBackend):
                     task_result=execution.task_result,
                 )
             )
+
+    def get_max_attempts(self, queue_name):
+        from google.cloud import run_v2
+
+        client = run_v2.JobsClient()
+        job_config = client.get_job(
+            name=f"projects/{self.project_id}/locations/{self.location}/jobs/{queue_name}"
+        )
+        retries = job_config.template.template.max_retries
+        return retries + 1  # We want total attempts
 
 
 class CloudTasksBackend(DjangoTasksGoogleBackend):
@@ -196,6 +239,7 @@ class CloudTasksBackend(DjangoTasksGoogleBackend):
                 schedule_time.FromDatetime(execution.run_after)
                 cloud_task_definition.schedule_time = schedule_time
             try:
+                max_attempts = self.get_max_attempts_with_cache(execution.queue_name)
                 cloud_task = client.create_task(
                     parent=f"projects/{self.project_id}/locations/{self.location}/queues/{execution.queue_name}",
                     task=cloud_task_definition,
@@ -211,7 +255,8 @@ class CloudTasksBackend(DjangoTasksGoogleBackend):
                 execution.save(update_fields=["status", "errors"])
                 return
             execution.cloud_task_name = cloud_task.name
-            execution.save(update_fields=["cloud_task_name"])
+            execution.max_attempts = max_attempts
+            execution.save(update_fields=["cloud_task_name", "max_attempts"])
             transaction.on_commit(
                 partial(
                     task_enqueued.send_robust,
@@ -219,3 +264,13 @@ class CloudTasksBackend(DjangoTasksGoogleBackend):
                     task_result=execution.task_result,
                 )
             )
+
+    def get_max_attempts(self, queue_name):
+        from google.cloud import tasks_v2
+
+        client = tasks_v2.CloudTasksClient()
+        queue = client.get_queue(
+            name=f"projects/{self.project_id}/locations/{self.location}/queues/{queue_name}"
+        )
+        max_attempts = queue.retry_config.max_attempts
+        return max_attempts if max_attempts >= 0 else None

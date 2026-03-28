@@ -35,9 +35,10 @@ def test_execute_task_view_returns_500_when_retry_requested(client):
             "/execute/",
             data={"execution_id": "1", "backend": "default"},
             HTTP_AUTHORIZATION="Bearer token",
+            HTTP_X_CLOUDTASKS_TASKRETRYCOUNT="0",
         )
     assert response.status_code == 500
-    execute_mock.assert_called_once_with("1")
+    execute_mock.assert_called_once_with("1", 1)
 
 
 @pytest.mark.django_db
@@ -52,6 +53,7 @@ def test_execute_task_view_returns_204_when_done(client):
             "/execute/",
             data={"execution_id": "1", "backend": "default"},
             HTTP_AUTHORIZATION="Bearer token",
+            HTTP_X_CLOUDTASKS_TASKRETRYCOUNT="0",
         )
     assert response.status_code == 204
 
