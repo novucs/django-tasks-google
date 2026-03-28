@@ -1,6 +1,6 @@
 from traceback import format_exception
 
-from django.db import models
+from django.db import models, transaction
 from django.tasks import (
     DEFAULT_TASK_BACKEND_ALIAS,
     DEFAULT_TASK_QUEUE_NAME,
@@ -44,7 +44,7 @@ class ScheduledTask(models.Model):
         sync_scheduled_task(self.pk)
 
     def __str__(self):
-        return f"{self.module_path}:{self.cloud_scheduler_job_name}"
+        return f"ScheduledTask id={self.pk} path={self.module_path} state={self.state}"
 
     @property
     def backend(self):
@@ -103,8 +103,9 @@ class TaskExecution(models.Model):
     lease_expires_at = models.DateTimeField(null=True)
 
     def __str__(self):
-        name = self.cloud_run_job_execution_name or self.cloud_task_name
-        return f"{self.module_path}:{name}"
+        return (
+            f"TaskExecution id={self.pk} path={self.module_path} status={self.status}"
+        )
 
     @property
     def backend(self):
@@ -150,21 +151,34 @@ class TaskExecution(models.Model):
             for error in self.errors
         ]
 
-    def cancel(self):
-        if not self.cloud_run_job_execution_name:
-            raise NotImplementedError("Only Cloud Run Jobs may be cancelled")
+    def cancel(self, force=False):
+        if force and not self.cloud_run_job_execution_name:
+            raise NotImplementedError("Only Cloud Run Jobs may be forcibly cancelled")
 
-        from google.cloud import run_v2
+        with transaction.atomic():
+            now = timezone.now()
+            self.lease_worker_id = None
+            self.lease_expires_at = None
+            self.cancelled_at = now
+            self.finished_at = now
+            self.status = TaskResultStatus.FAILED
+            self.save(
+                update_fields=[
+                    "lease_worker_id",
+                    "lease_expires_at",
+                    "cancelled_at",
+                    "finished_at",
+                    "status",
+                ],
+            )
 
-        client = run_v2.ExecutionsClient()
-        client.cancel_execution(
-            run_v2.CancelExecutionRequest(name=self.cloud_run_job_execution_name)
-        )
-        now = timezone.now()
-        self.cancelled_at = now
-        self.finished_at = now
-        self.status = TaskResultStatus.FAILED
-        self.save(update_fields=["cancelled_at", "finished_at", "status"])
+        if force:
+            from google.cloud import run_v2
+
+            client = run_v2.ExecutionsClient()
+            client.cancel_execution(
+                run_v2.CancelExecutionRequest(name=self.cloud_run_job_execution_name)
+            )
 
     def append_error_entry(self, exception: BaseException):
         exception_type = type(exception)

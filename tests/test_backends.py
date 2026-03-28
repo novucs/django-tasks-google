@@ -167,7 +167,7 @@ def test_cloud_run_enqueue_gcp_sets_execution_name_on_success(
 
     with (
         patch("google.cloud.run_v2.JobsClient", autospec=True) as jobs_client_cls,
-        patch("django_tasks_google.backends.task_enqueued.send") as send_mock,
+        patch("django_tasks_google.backends.task_enqueued.send_robust") as send_mock,
         django_capture_on_commit_callbacks(execute=True),
     ):
         jobs_client = jobs_client_cls.return_value
@@ -220,7 +220,7 @@ def test_cloud_run_enqueue_gcp_marks_failed_on_client_error():
         patch("google.cloud.run_v2.JobsClient", autospec=True) as jobs_client_cls,
         patch("django_tasks_google.backends.logger.exception") as log_exception_mock,
         patch(
-            "django_tasks_google.backends.task_enqueued.send", autospec=True
+            "django_tasks_google.backends.task_enqueued.send_robust", autospec=True
         ) as send_mock,
     ):
         jobs_client = jobs_client_cls.return_value
@@ -253,7 +253,7 @@ def test_cloud_tasks_enqueue_gcp_builds_expected_http_request(
 
     with (
         patch("google.cloud.tasks_v2.CloudTasksClient", autospec=True) as client_cls,
-        patch("django_tasks_google.backends.task_enqueued.send") as send_mock,
+        patch("django_tasks_google.backends.task_enqueued.send_robust") as send_mock,
         django_capture_on_commit_callbacks(execute=True),
     ):
         client = client_cls.return_value

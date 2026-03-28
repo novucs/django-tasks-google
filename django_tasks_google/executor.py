@@ -1,6 +1,7 @@
 import logging
 import threading
 import uuid
+from dataclasses import dataclass
 from datetime import timedelta
 
 from django.db import close_old_connections, connection, transaction
@@ -13,14 +14,6 @@ from django_tasks_google.models import TaskExecution
 logger = logging.getLogger("django_tasks_google")
 
 
-class TaskAlreadyFinished(Exception):
-    pass
-
-
-class TaskLeaseConflict(Exception):
-    pass
-
-
 class TaskError(Exception):
     retryable = True
 
@@ -29,21 +22,78 @@ class PermanentTaskError(TaskError):
     retryable = False
 
 
+class TaskCancelledError(TaskError):
+    retryable = False
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CancellableTaskContext(TaskContext):
+    cancel_event: threading.Event
+
+    def is_cancelled(self):
+        return self.cancel_event.is_set()
+
+    def raise_if_cancelled(self):
+        if self.is_cancelled():
+            raise TaskCancelledError("Task has been cancelled")
+
+
 def execute_task(execution_id):
-    try:
-        worker_id, execution = try_acquire_execution_lease(execution_id)
-    except (TaskAlreadyFinished, TaskLeaseConflict) as e:
-        logger.warning(f"Failed to acquire {execution_id}: {e}")
+    """
+    Execute a task associated with a TaskExecution record.
+
+    This function attempts to acquire a lease for the given execution and, if
+    successful, runs the task while maintaining a heartbeat to extend the lease.
+    The task is executed with optional context support for cooperative
+    cancellation.
+
+    Execution flow:
+        - Attempts to acquire a lease for the task.
+        - Starts a heartbeat thread (if enabled) to maintain the lease.
+        - Emits `task_started` signal before execution.
+        - Executes the task callable.
+        - On success, finalizes the task as SUCCESSFUL and emits `task_finished`.
+        - On failure, finalizes the task as FAILED and emits `task_finished`.
+        - If the lease is lost at any point, skips finalization.
+
+    Cancellation:
+        If the task accepts a context, it receives a `CancellableTaskContext`
+        which allows it to detect lease loss and abort cooperatively.
+
+    Lease semantics:
+        - Only the worker holding the lease may finalize the task.
+        - If the lease is lost (e.g. heartbeat failure or takeover by another worker),
+          the task result is ignored and not persisted.
+
+    :param execution_id: Primary key of the TaskExecution to run.
+
+    :return:
+        bool:
+            - True if the task should be retried (i.e. failure was retryable).
+            - False if:
+                - execution was skipped (e.g. lease not acquired),
+                - task completed successfully,
+                - task failed with a non-retryable error,
+                - or lease was lost during execution.
+    """
+
+    execution = try_acquire_execution_lease(execution_id)
+    if not execution:
         return False
 
+    worker_id = execution.lease_worker_id
     backend = execution.backend
+    path = execution.module_path
     stop_event = threading.Event()
+    lease_lost_event = threading.Event()
     heartbeat_thread = threading.Thread(
         target=heartbeat_loop,
         daemon=True,
         kwargs={
             "stop_event": stop_event,
+            "lease_lost_event": lease_lost_event,
             "execution_id": execution_id,
+            "path": path,
             "worker_id": worker_id,
             "timeout": backend.heartbeat_timeout,
             "interval": backend.heartbeat_interval,
@@ -55,23 +105,41 @@ def execute_task(execution_id):
     try:
         args = execution.args
         if execution.takes_context:
-            args = (TaskContext(task_result=execution.task_result), *args)
-        task_started.send(sender=type(backend), task_result=execution.task_result)
+            context = CancellableTaskContext(
+                task_result=execution.task_result,
+                cancel_event=lease_lost_event,
+            )
+            args = (context, *args)
+        task_started.send_robust(
+            sender=type(backend), task_result=execution.task_result
+        )
         return_value = execution.task.call(*args, **execution.kwargs)
-        task_result = finalize_success(execution_id, worker_id, return_value)
+        if lease_lost_event.is_set():
+            logger.warning(
+                "Task id=%s path=%s skipping finalization due to lost lease",
+                execution_id,
+                path,
+            )
+            return False
+        task_result = finalize_completion(execution_id, path, worker_id, return_value)
         if not task_result:
             return False
-        task_finished.send(sender=type(backend), task_result=task_result)
-        logger.info(f"{execution} completed")
+        task_finished.send_robust(sender=type(backend), task_result=task_result)
         return False
-    except Exception as e:
-        logger.exception(f"An error occurred during {execution}")
-        task_result = finalize_failure(execution_id, worker_id, e)
+    except Exception as err:
+        logger.exception("Task id=%s path=%s failed: %s", execution_id, path, err)
+        if lease_lost_event.is_set():
+            logger.warning(
+                "Task id=%s path=%s skipping finalization due to lost lease",
+                execution_id,
+                path,
+            )
+            return False
+        task_result = finalize_failure(execution_id, path, worker_id, err)
         if not task_result:
             return False
-        task_finished.send(sender=type(backend), task_result=task_result)
-        # Only attempt to retry if we held the lease.
-        return e.retryable if isinstance(e, TaskError) else True
+        task_finished.send_robust(sender=type(backend), task_result=task_result)
+        return err.retryable if isinstance(err, TaskError) else True
 
     finally:
         if backend.heartbeat_enabled:
@@ -82,9 +150,21 @@ def execute_task(execution_id):
 def try_acquire_execution_lease(execution_id: int):
     now = timezone.now()
     with transaction.atomic():
-        execution = TaskExecution.objects.select_for_update().get(pk=execution_id)
+        execution = (
+            TaskExecution.objects.select_for_update().filter(pk=execution_id).first()
+        )
+        if not execution:
+            logger.warning("Task id=%s not found", execution_id)
+            return None
+
         if execution.status == TaskResultStatus.SUCCESSFUL:
-            raise TaskAlreadyFinished(f"{execution} is already done")
+            logger.warning(
+                "Task id=%s path=%s status=%s is already finished",
+                execution_id,
+                execution.module_path,
+                execution.status,
+            )
+            return None
 
         backend = execution.backend
         if (
@@ -92,9 +172,13 @@ def try_acquire_execution_lease(execution_id: int):
             and execution.lease_expires_at
             and execution.lease_expires_at > now
         ):
-            raise TaskLeaseConflict(
-                f"{execution} is already claimed by {execution.lease_worker_id}"
+            logger.warning(
+                "Task id=%s path=%s lease is already claimed by worker=%s",
+                execution_id,
+                execution.module_path,
+                execution.lease_worker_id,
             )
+            return None
 
         worker_id = str(uuid.uuid4())
         execution.status = TaskResultStatus.RUNNING
@@ -104,7 +188,7 @@ def try_acquire_execution_lease(execution_id: int):
         execution.lease_expires_at = (
             now + backend.heartbeat_timeout if backend.heartbeat_enabled else None
         )
-        execution.worker_ids.append(worker_id)
+        execution.worker_ids = [*execution.worker_ids, worker_id]
         execution.save(
             update_fields=[
                 "status",
@@ -115,45 +199,92 @@ def try_acquire_execution_lease(execution_id: int):
                 "worker_ids",
             ]
         )
-        logger.info(f"{execution} acquired by {worker_id}")
-        return worker_id, execution
+        logger.info(
+            "Task id=%s path=%s lease successfully claimed by worker=%s",
+            execution_id,
+            execution.module_path,
+            worker_id,
+        )
+        return execution
 
 
 def heartbeat_loop(
     *,
     stop_event: threading.Event,
+    lease_lost_event: threading.Event,
     execution_id: int,
+    path: str,
     worker_id: str,
     timeout: timedelta,
     interval: timedelta,
 ):
+    last_successful_heartbeat_at = timezone.now()
+
     try:
         while not stop_event.wait(interval.total_seconds()):
             close_old_connections()
-            now = timezone.now()
-            updated_count = TaskExecution.objects.filter(
-                pk=execution_id,
-                lease_worker_id=worker_id,
-                status=TaskResultStatus.RUNNING,
-            ).update(lease_expires_at=now + timeout)
-            if updated_count == 0:
-                logger.warning(
-                    f"{worker_id} lost the lease for execution {execution_id}"
+
+            try:
+                now = timezone.now()
+                updated_count = TaskExecution.objects.filter(
+                    pk=execution_id,
+                    lease_worker_id=worker_id,
+                    status=TaskResultStatus.RUNNING,
+                ).update(lease_expires_at=now + timeout)
+
+                if updated_count == 0:
+                    logger.warning(
+                        "Task id=%s path=%s worker=%s lease lost",
+                        execution_id,
+                        path,
+                        worker_id,
+                    )
+                    lease_lost_event.set()
+                    return
+
+                last_successful_heartbeat_at = now
+
+            except Exception as err:
+                logger.exception(
+                    "Task id=%s path=%s heartbeat failed: %s",
+                    execution_id,
+                    path,
+                    err,
                 )
-                return
+
+                if timezone.now() >= last_successful_heartbeat_at + timeout:
+                    logger.warning(
+                        (
+                            "Task id=%s path=%s worker=%s heartbeat deadline exceeded; "
+                            "treating lease as lost"
+                        ),
+                        execution_id,
+                        path,
+                        worker_id,
+                    )
+                    lease_lost_event.set()
+                    return
     finally:
         connection.close()
 
 
-def finalize_success(execution_id, worker_id, return_value):
+def finalize_completion(execution_id, path, worker_id, return_value):
     close_old_connections()
     with transaction.atomic():
-        execution = TaskExecution.objects.select_for_update().get(pk=execution_id)
+        execution = (
+            TaskExecution.objects.select_for_update().filter(pk=execution_id).first()
+        )
         if (
-            execution.lease_worker_id != worker_id
+            execution is None
+            or execution.lease_worker_id != worker_id
             or execution.status != TaskResultStatus.RUNNING
         ):
-            logger.warning(f"{worker_id} unable to update {execution}")
+            logger.warning(
+                "Task id=%s path=%s worker=%s lease lost",
+                execution_id,
+                path,
+                worker_id,
+            )
             return None
 
         execution.finished_at = timezone.now()
@@ -173,15 +304,23 @@ def finalize_success(execution_id, worker_id, return_value):
         return execution.task_result
 
 
-def finalize_failure(execution_id, worker_id, exception):
+def finalize_failure(execution_id, path, worker_id, exception):
     close_old_connections()
     with transaction.atomic():
-        execution = TaskExecution.objects.select_for_update().get(pk=execution_id)
+        execution = (
+            TaskExecution.objects.select_for_update().filter(pk=execution_id).first()
+        )
         if (
-            execution.lease_worker_id != worker_id
+            execution is None
+            or execution.lease_worker_id != worker_id
             or execution.status != TaskResultStatus.RUNNING
         ):
-            logger.warning(f"{worker_id} unable to update {execution}")
+            logger.warning(
+                "Task id=%s path=%s worker=%s lease lost",
+                execution_id,
+                path,
+                worker_id,
+            )
             return None
 
         execution.finished_at = timezone.now()

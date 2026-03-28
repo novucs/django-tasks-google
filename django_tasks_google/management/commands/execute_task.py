@@ -11,6 +11,4 @@ class Command(BaseCommand):
         execution_id = options["execution_id"]
         should_retry = execute_task(execution_id)
         if should_retry:
-            raise CommandError(
-                f"Task execution retry requested for execution_id={execution_id}"
-            )
+            raise CommandError(f"Task id={execution_id} retry requested")

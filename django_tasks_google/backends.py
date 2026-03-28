@@ -151,7 +151,9 @@ class CloudRunJobsBackend(DjangoTasksGoogleBackend):
             execution.save(update_fields=["cloud_run_job_execution_name"])
             transaction.on_commit(
                 partial(
-                    task_enqueued.send, type(self), task_result=execution.task_result
+                    task_enqueued.send_robust,
+                    type(self),
+                    task_result=execution.task_result,
                 )
             )
 
@@ -212,6 +214,8 @@ class CloudTasksBackend(DjangoTasksGoogleBackend):
             execution.save(update_fields=["cloud_task_name"])
             transaction.on_commit(
                 partial(
-                    task_enqueued.send, type(self), task_result=execution.task_result
+                    task_enqueued.send_robust,
+                    type(self),
+                    task_result=execution.task_result,
                 )
             )

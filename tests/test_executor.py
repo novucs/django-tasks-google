@@ -7,11 +7,9 @@ from django.tasks.base import TaskResultStatus
 from django.utils import timezone
 
 from django_tasks_google.executor import (
-    TaskAlreadyFinished,
-    TaskLeaseConflict,
     execute_task,
+    finalize_completion,
     finalize_failure,
-    finalize_success,
     try_acquire_execution_lease,
 )
 from django_tasks_google.models import TaskExecution
@@ -30,7 +28,9 @@ def execution():
 
 @pytest.mark.django_db
 def test_try_acquire_execution_lease_sets_running_state(execution):
-    worker_id, leased = try_acquire_execution_lease(execution.pk)
+    leased = try_acquire_execution_lease(execution.pk)
+    assert leased is not None
+    worker_id = leased.lease_worker_id
     leased.refresh_from_db()
 
     assert worker_id == leased.lease_worker_id
@@ -42,30 +42,30 @@ def test_try_acquire_execution_lease_sets_running_state(execution):
 
 
 @pytest.mark.django_db
-def test_try_acquire_execution_lease_raises_for_successful_task(execution):
+def test_try_acquire_execution_lease_returns_none_for_successful_task(execution):
     execution.status = TaskResultStatus.SUCCESSFUL
     execution.save(update_fields=["status"])
 
-    with pytest.raises(TaskAlreadyFinished):
-        try_acquire_execution_lease(execution.pk)
+    assert try_acquire_execution_lease(execution.pk) is None
 
 
 @pytest.mark.django_db
-def test_try_acquire_execution_lease_raises_for_active_lease(execution):
+def test_try_acquire_execution_lease_returns_none_for_active_lease(execution):
     execution.status = TaskResultStatus.RUNNING
     execution.lease_worker_id = "existing-worker"
     execution.lease_expires_at = timezone.now() + timedelta(minutes=1)
     execution.save(update_fields=["status", "lease_worker_id", "lease_expires_at"])
 
-    with pytest.raises(TaskLeaseConflict):
-        try_acquire_execution_lease(execution.pk)
+    assert try_acquire_execution_lease(execution.pk) is None
 
 
 @pytest.mark.django_db
 def test_finalize_success_updates_execution_when_worker_matches(execution):
-    worker_id, _ = try_acquire_execution_lease(execution.pk)
+    acquired = try_acquire_execution_lease(execution.pk)
+    worker_id = acquired.lease_worker_id
+    path = execution.module_path
 
-    task_result = finalize_success(execution.pk, worker_id, {"ok": True})
+    task_result = finalize_completion(execution.pk, path, worker_id, {"ok": True})
     execution.refresh_from_db()
 
     assert task_result is not None
@@ -78,10 +78,12 @@ def test_finalize_success_updates_execution_when_worker_matches(execution):
 
 @pytest.mark.django_db
 def test_finalize_failure_records_error_and_clears_lease(execution):
-    worker_id, _ = try_acquire_execution_lease(execution.pk)
+    acquired = try_acquire_execution_lease(execution.pk)
+    worker_id = acquired.lease_worker_id
+    path = execution.module_path
     error = RuntimeError("boom")
 
-    task_result = finalize_failure(execution.pk, worker_id, error)
+    task_result = finalize_failure(execution.pk, path, worker_id, error)
     execution.refresh_from_db()
 
     assert task_result is not None

@@ -10,9 +10,7 @@ def test_execute_task_command_raises_when_execution_returns_true():
         "django_tasks_google.management.commands.execute_task.execute_task"
     ) as run_mock:
         run_mock.return_value = True
-        with pytest.raises(
-            CommandError, match="Task execution retry requested for execution_id=123"
-        ):
+        with pytest.raises(CommandError, match=r"Task id=123 retry requested"):
             call_command("execute_task", "123")
 
 
