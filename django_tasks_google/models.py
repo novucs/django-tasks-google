@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import logging
 from traceback import format_exception
 
 from django.db import models
@@ -10,8 +13,9 @@ from django.tasks import (
     task_backends,
 )
 from django.tasks.base import DEFAULT_TASK_PRIORITY, TaskError
-from django.utils import timezone
 from django.utils.module_loading import import_string
+
+logger = logging.getLogger("django_tasks_google")
 
 
 class ScheduledTask(models.Model):
@@ -44,7 +48,7 @@ class ScheduledTask(models.Model):
         sync_scheduled_task(self.pk)
 
     def __str__(self):
-        return f"{self.module_path}:{self.cloud_scheduler_job_name}"
+        return f"ScheduledTask id={self.pk} path={self.module_path} state={self.state}"
 
     @property
     def backend(self):
@@ -98,17 +102,27 @@ class TaskExecution(models.Model):
     cancelled_at = models.DateTimeField(null=True)
     cloud_run_job_execution_name = models.TextField(null=True, unique=True)
     cloud_task_name = models.TextField(null=True, unique=True)
+    max_attempts = models.IntegerField(null=True)
 
     lease_worker_id = models.TextField(null=True)
     lease_expires_at = models.DateTimeField(null=True)
 
     def __str__(self):
-        name = self.cloud_run_job_execution_name or self.cloud_task_name
-        return f"{self.module_path}:{name}"
+        return (
+            f"TaskExecution id={self.pk} path={self.module_path} status={self.status}"
+        )
 
     @property
     def backend(self):
-        return task_backends[self.backend_alias]
+        from django_tasks_google.backends import DjangoTasksGoogleBackend
+
+        backend = task_backends[self.backend_alias]
+        if not isinstance(backend, DjangoTasksGoogleBackend):
+            raise TypeError(
+                f"Backend '{self.backend_alias}' must be an instance of "
+                f"DjangoTasksGoogleBackend, not {type(backend).__name__}."
+            )
+        return backend
 
     @property
     def task(self) -> Task:
@@ -150,21 +164,9 @@ class TaskExecution(models.Model):
             for error in self.errors
         ]
 
-    def cancel(self):
-        if not self.cloud_run_job_execution_name:
-            raise NotImplementedError("Only Cloud Run Jobs may be cancelled")
-
-        from google.cloud import run_v2
-
-        client = run_v2.ExecutionsClient()
-        client.cancel_execution(
-            run_v2.CancelExecutionRequest(name=self.cloud_run_job_execution_name)
-        )
-        now = timezone.now()
-        self.cancelled_at = now
-        self.finished_at = now
-        self.status = TaskResultStatus.FAILED
-        self.save(update_fields=["cancelled_at", "finished_at", "status"])
+    @property
+    def is_finished(self):
+        return self.status in (TaskResultStatus.SUCCESSFUL, TaskResultStatus.FAILED)
 
     def append_error_entry(self, exception: BaseException):
         exception_type = type(exception)
@@ -175,3 +177,13 @@ class TaskExecution(models.Model):
             "traceback": "".join(format_exception(exception)),
         }
         self.errors = [*(self.errors or []), error_entry]
+
+        max_history_entries = self.backend.max_history_entries
+        if len(self.errors) > max_history_entries:
+            logger.warning(
+                "Task id=%s path=%s clipping errors to the last %s",
+                self.pk,
+                self.module_path,
+                max_history_entries,
+            )
+            self.errors = self.errors[-max_history_entries:]

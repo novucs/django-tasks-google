@@ -20,43 +20,37 @@ def schedule_task(
     args: list | None = None,
     kwargs: dict | None = None,
 ) -> ScheduledTask:
-    with transaction.atomic():
-        scheduled_task = ScheduledTask.objects.create(
-            name=name or task.name,
-            description=description,
-            schedule=schedule,
-            time_zone=time_zone,
-            state=(
-                ScheduledTask.State.ENABLED if enabled else ScheduledTask.State.DISABLED
-            ),
-            module_path=task.module_path,
-            backend_alias=task_backends[backend].alias if backend else "",
-            queue_name=queue_name,
-            takes_context=takes_context,
-            args=args or [],
-            kwargs=kwargs or {},
-        )
-        scheduled_task.sync()
+    scheduled_task = ScheduledTask.objects.create(
+        name=name or task.name,
+        description=description,
+        schedule=schedule,
+        time_zone=time_zone,
+        state=(
+            ScheduledTask.State.ENABLED if enabled else ScheduledTask.State.DISABLED
+        ),
+        module_path=task.module_path,
+        backend_alias=task_backends[backend].alias if backend else "",
+        queue_name=queue_name,
+        takes_context=takes_context,
+        args=args or [],
+        kwargs=kwargs or {},
+    )
+    scheduled_task.sync()
     return scheduled_task
 
 
-def sync_scheduled_tasks():
-    for task in ScheduledTask.objects.all():
-        sync_scheduled_task(task.pk)
-
-
 @transaction.atomic
-def sync_scheduled_task(task_id: int):
+def sync_scheduled_task(scheduled_task_id):
     from google.api_core.exceptions import NotFound
     from google.cloud import scheduler_v1
 
-    task = ScheduledTask.objects.select_for_update().get(pk=task_id)
+    task = ScheduledTask.objects.select_for_update().get(pk=scheduled_task_id)
     client = scheduler_v1.CloudSchedulerClient()
     backend = task.backend
     parent = f"projects/{backend.project_id}/locations/{backend.location}"
     job_name = f"{parent}/jobs/{task.name}"
     payload = {
-        "task_id": str(task_id),
+        "task_id": str(scheduled_task_id),
         "backend": task.backend.alias,
     }
     job = scheduler_v1.Job(
@@ -96,6 +90,14 @@ def sync_scheduled_task(task_id: int):
         client.resume_job(name=job_name)
     if job.state != job.State.DISABLED and task.state == task.State.DISABLED:
         client.pause_job(name=job_name)
+
+
+def delete_scheduled_task(scheduled_task_id):
+    with transaction.atomic():
+        task = ScheduledTask.objects.select_for_update().get(pk=scheduled_task_id)
+        job_name = task.cloud_scheduler_job_name
+        task.delete()
+    delete_cloud_scheduler_job_if_exists(job_name)
 
 
 def delete_cloud_scheduler_job_if_exists(job_name: str | None = None):

@@ -37,7 +37,14 @@ def execute_task_view(request):
         logger.warning("Failed to auth execution of %s: %s", execution_id, auth_error)
         return HttpResponse(status=auth_status)
 
-    should_retry = execute_task(execution_id)
+    try:
+        # X-CloudTasks-TaskRetryCount is 0-indexed.
+        attempt = int(request.headers.get("X-CloudTasks-TaskRetryCount")) + 1
+    except ValueError:
+        logger.exception("X-CloudTasks-TaskRetryCount must be an integer")
+        return HttpResponseBadRequest()
+
+    should_retry = execute_task(execution_id, attempt)
     if should_retry:
         logger.info("Task %s requested retry", execution_id)
         return HttpResponseServerError()
@@ -66,7 +73,7 @@ def schedule_task_view(request):
         return HttpResponse(status=auth_status)
 
     job_name = request.headers.get("X-CloudScheduler-JobName")
-    schedule_time = request.headers.get("X-CloudScheduler-ScheduleTime", "")
+    schedule_time = request.headers.get("X-CloudScheduler-ScheduleTime")
     if not job_name:
         logger.warning("X-CloudScheduler-JobName header was not set")
         return HttpResponseBadRequest()

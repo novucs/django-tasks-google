@@ -6,14 +6,7 @@ import pytest
 from django.tasks.base import TaskResultStatus
 from django.utils import timezone
 
-from django_tasks_google.executor import (
-    TaskAlreadyFinished,
-    TaskLeaseConflict,
-    execute_task,
-    finalize_failure,
-    finalize_success,
-    try_acquire_execution_lease,
-)
+from django_tasks_google.executor import TaskExecutor, execute_task, try_acquire_lease
 from django_tasks_google.models import TaskExecution
 
 
@@ -30,7 +23,9 @@ def execution():
 
 @pytest.mark.django_db
 def test_try_acquire_execution_lease_sets_running_state(execution):
-    worker_id, leased = try_acquire_execution_lease(execution.pk)
+    leased = try_acquire_lease(execution.pk, attempt=1)
+    assert leased is not None
+    worker_id = leased.lease_worker_id
     leased.refresh_from_db()
 
     assert worker_id == leased.lease_worker_id
@@ -42,30 +37,28 @@ def test_try_acquire_execution_lease_sets_running_state(execution):
 
 
 @pytest.mark.django_db
-def test_try_acquire_execution_lease_raises_for_successful_task(execution):
+def test_try_acquire_execution_lease_returns_none_for_successful_task(execution):
     execution.status = TaskResultStatus.SUCCESSFUL
     execution.save(update_fields=["status"])
 
-    with pytest.raises(TaskAlreadyFinished):
-        try_acquire_execution_lease(execution.pk)
+    assert try_acquire_lease(execution.pk, attempt=1) is None
 
 
 @pytest.mark.django_db
-def test_try_acquire_execution_lease_raises_for_active_lease(execution):
+def test_try_acquire_execution_lease_returns_none_for_active_lease(execution):
     execution.status = TaskResultStatus.RUNNING
     execution.lease_worker_id = "existing-worker"
     execution.lease_expires_at = timezone.now() + timedelta(minutes=1)
     execution.save(update_fields=["status", "lease_worker_id", "lease_expires_at"])
 
-    with pytest.raises(TaskLeaseConflict):
-        try_acquire_execution_lease(execution.pk)
+    assert try_acquire_lease(execution.pk, attempt=1) is None
 
 
 @pytest.mark.django_db
-def test_finalize_success_updates_execution_when_worker_matches(execution):
-    worker_id, _ = try_acquire_execution_lease(execution.pk)
-
-    task_result = finalize_success(execution.pk, worker_id, {"ok": True})
+def test_save_task_result_success_updates_execution_when_worker_matches(execution):
+    acquired = try_acquire_lease(execution.pk, attempt=1)
+    executor = TaskExecutor(1, acquired)
+    task_result = executor.save_task_result(return_value={"ok": True})
     execution.refresh_from_db()
 
     assert task_result is not None
@@ -77,16 +70,17 @@ def test_finalize_success_updates_execution_when_worker_matches(execution):
 
 
 @pytest.mark.django_db
-def test_finalize_failure_records_error_and_clears_lease(execution):
-    worker_id, _ = try_acquire_execution_lease(execution.pk)
+def test_save_task_result_failure_records_error_and_clears_lease(execution):
+    acquired = try_acquire_lease(execution.pk, attempt=1)
     error = RuntimeError("boom")
 
-    task_result = finalize_failure(execution.pk, worker_id, error)
+    executor = TaskExecutor(1, acquired)
+    task_result = executor.save_task_result(exception=error)
     execution.refresh_from_db()
 
     assert task_result is not None
-    assert execution.status == TaskResultStatus.FAILED
-    assert execution.finished_at is not None
+    assert execution.status == TaskResultStatus.READY
+    assert execution.finished_at is None
     assert execution.lease_worker_id is None
     assert execution.lease_expires_at is None
     assert len(execution.errors) == 1
@@ -100,6 +94,8 @@ def test_execute_task_success_returns_false_and_persists_result(execution):
         heartbeat_timeout=timedelta(seconds=3),
         heartbeat_interval=timedelta(seconds=1),
         heartbeat_join_timeout=timedelta(seconds=1),
+        run_once=False,
+        max_history_entries=100,
     )
     fake_task = SimpleNamespace(
         call=lambda *args, **kwargs: 42,
@@ -115,7 +111,7 @@ def test_execute_task_success_returns_false_and_persists_result(execution):
         task_prop.return_value = fake_task
         backend_prop.return_value = fake_backend
 
-        should_retry = execute_task(execution.pk)
+        should_retry = execute_task(execution.pk, attempt=1)
 
     execution.refresh_from_db()
     assert should_retry is False
@@ -130,6 +126,8 @@ def test_execute_task_failure_returns_true_and_records_error(execution):
         heartbeat_timeout=timedelta(seconds=3),
         heartbeat_interval=timedelta(seconds=1),
         heartbeat_join_timeout=timedelta(seconds=1),
+        run_once=False,
+        max_history_entries=100,
     )
 
     def _raise_error(*args, **kwargs):
@@ -149,10 +147,10 @@ def test_execute_task_failure_returns_true_and_records_error(execution):
         task_prop.return_value = fake_task
         backend_prop.return_value = fake_backend
 
-        should_retry = execute_task(execution.pk)
+        should_retry = execute_task(execution.pk, attempt=1)
 
     execution.refresh_from_db()
     assert should_retry is True
-    assert execution.status == TaskResultStatus.FAILED
+    assert execution.status == TaskResultStatus.READY
     assert len(execution.errors) == 1
     assert execution.errors[0]["exception_class_path"].endswith("ValueError")

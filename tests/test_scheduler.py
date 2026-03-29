@@ -8,7 +8,6 @@ from django_tasks_google.scheduler import (
     delete_cloud_scheduler_job_if_exists,
     schedule_task,
     sync_scheduled_task,
-    sync_scheduled_tasks,
 )
 from tests.fake_tasks import sample_task
 
@@ -60,16 +59,9 @@ def test_schedule_task_leaves_backend_alias_empty_when_not_provided():
 
 
 @pytest.mark.django_db
-def test_sync_scheduled_tasks_calls_sync_per_row():
-    a = ScheduledTask.objects.create(
+def test_scheduled_task_sync_delegates_to_sync_scheduled_task():
+    task = ScheduledTask.objects.create(
         name="task-a",
-        schedule="0 * * * *",
-        module_path="tests.fake_tasks.sample_task",
-        backend_alias="default",
-        queue_name="default",
-    )
-    b = ScheduledTask.objects.create(
-        name="task-b",
         schedule="0 * * * *",
         module_path="tests.fake_tasks.sample_task",
         backend_alias="default",
@@ -77,10 +69,9 @@ def test_sync_scheduled_tasks_calls_sync_per_row():
     )
 
     with patch("django_tasks_google.scheduler.sync_scheduled_task") as sync_one_mock:
-        sync_scheduled_tasks()
+        task.sync()
 
-    called_ids = {call.args[0] for call in sync_one_mock.call_args_list}
-    assert called_ids == {a.pk, b.pk}
+    sync_one_mock.assert_called_once_with(task.pk)
 
 
 @pytest.mark.django_db
