@@ -15,7 +15,7 @@ class Command(BaseCommand):
         try:
             # CLOUD_RUN_TASK_ATTEMPT is 0-indexed.
             attempt = int(os.environ.get("CLOUD_RUN_TASK_ATTEMPT")) + 1
-        except ValueError as e:
+        except (TypeError, ValueError) as e:
             raise CommandError("CLOUD_RUN_TASK_ATTEMPT must be an integer") from e
 
         should_retry = execute_task(execution_id, attempt)

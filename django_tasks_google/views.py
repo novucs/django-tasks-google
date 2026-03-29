@@ -40,11 +40,11 @@ def execute_task_view(request):
     try:
         # X-CloudTasks-TaskRetryCount is 0-indexed.
         attempt = int(request.headers.get("X-CloudTasks-TaskRetryCount")) + 1
-    except ValueError:
+    except (TypeError, ValueError):
         logger.exception("X-CloudTasks-TaskRetryCount must be an integer")
         return HttpResponseBadRequest()
 
-    should_retry = execute_task(execution_id, attempt)
+    should_retry = execute_task(execution_id, attempt, backend=backend)
     if should_retry:
         logger.info("Task %s requested retry", execution_id)
         return HttpResponseServerError()
@@ -86,6 +86,15 @@ def schedule_task_view(request):
         task = ScheduledTask.objects.select_for_update().get(pk=task_id)
     except ScheduledTask.DoesNotExist:
         logger.warning("Could not find scheduled task: %s", task_id)
+        return HttpResponseNotFound()
+
+    if task.backend.alias != backend.alias:
+        logger.warning(
+            "Requested wrong backend alias task=%s requested=%s expected=%s",
+            task_id,
+            task.backend.alias,
+            backend.alias,
+        )
         return HttpResponseNotFound()
 
     if task.idempotency_key == idempotency_key:

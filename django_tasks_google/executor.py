@@ -70,6 +70,14 @@ class TaskExecutor:
                     json.dumps(return_value, cls=DjangoJSONEncoder)
                 except TypeError as err:
                     raise PermanentTaskError("Cannot serialize return value") from err
+            except TaskCancelledError:
+                logger.warning(
+                    "Task id=%s path=%s worker=%s cancelled",
+                    self.execution_id,
+                    self.path,
+                    self.worker_id,
+                )
+                return None
             except Exception as err:
                 exception = err
             task_result = self.save_task_result(
@@ -211,8 +219,8 @@ class TaskExecutor:
             connection.close()
 
 
-def execute_task(execution_id, attempt):
-    execution = try_acquire_lease(execution_id, attempt)
+def execute_task(execution_id, attempt, *, backend=None):
+    execution = try_acquire_lease(execution_id, attempt, backend=backend)
     if not execution:
         return False
     if len(execution.worker_ids) == 1:
@@ -251,7 +259,7 @@ def execute_task(execution_id, attempt):
     return task_result.status == TaskResultStatus.READY
 
 
-def try_acquire_lease(execution_id, attempt):
+def try_acquire_lease(execution_id, attempt, *, backend=None):
     now = timezone.now()
     with transaction.atomic():
         execution = (
@@ -259,6 +267,15 @@ def try_acquire_lease(execution_id, attempt):
         )
         if not execution:
             logger.warning("Task id=%s not found", execution_id)
+            return None
+
+        if backend and backend.alias != execution.backend_alias:
+            logger.warning(
+                "Task id=%s backends requested=%s expected=%s do not match",
+                execution_id,
+                backend.alias,
+                execution.backend_alias,
+            )
             return None
 
         if execution.is_finished:
