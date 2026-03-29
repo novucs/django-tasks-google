@@ -1,6 +1,6 @@
 [project]
 name = "django-tasks-google"
-version = "0.3.0"
+version = "0.3.1"
 description = "Django's Task Framework backends for: Cloud Tasks, Cloud Scheduler, and Cloud Run Jobs"
 readme = "README.md"
 requires-python = ">=3.12"
