@@ -1,38 +1,25 @@
+import contextlib
 import json
 import logging
+import signal
 import threading
 import uuid
-from dataclasses import dataclass
 
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import close_old_connections, connection, transaction
-from django.tasks.base import TaskContext, TaskResultStatus
+from django.tasks.base import TaskResultStatus
 from django.tasks.signals import task_finished, task_started
 from django.utils import timezone
 
+from django_tasks_google.base import (
+    PermanentTaskError,
+    TaskCancelledError,
+    TaskContext,
+    TaskError,
+)
 from django_tasks_google.models import TaskExecution
 
 logger = logging.getLogger("django_tasks_google")
-
-
-class TaskError(Exception):
-    retryable = True
-
-
-class PermanentTaskError(TaskError):
-    retryable = False
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class CancellableTaskContext(TaskContext):
-    _cancel_event: threading.Event
-
-    def is_cancelled(self) -> bool:
-        return self._cancel_event.is_set()
-
-    def raise_if_cancelled(self) -> None:
-        if self.is_cancelled():
-            raise PermanentTaskError("Task has been cancelled")
 
 
 class TaskExecutor:
@@ -67,16 +54,18 @@ class TaskExecutor:
             # preserving compatibility with tasks that do not require that guarantee.
             args = self.args
             if self.takes_context:
-                context = CancellableTaskContext(
+                context = TaskContext(
                     task_result=self.task_result,
                     _cancel_event=self.lease_lost_event,
+                    _attempt=self.attempt,
                 )
                 args = (context, *args)
 
             exception = None
             return_value = None
             try:
-                return_value = self.task.call(*args, **self.kwargs)
+                with try_register_sigterm_handler(self.handle_sigterm):
+                    return_value = self.task.call(*args, **self.kwargs)
                 try:
                     json.dumps(return_value, cls=DjangoJSONEncoder)
                 except TypeError as err:
@@ -94,6 +83,25 @@ class TaskExecutor:
                 self.heartbeat_thread.join(
                     self.backend.heartbeat_join_timeout.total_seconds()
                 )
+                if self.heartbeat_thread.is_alive():
+                    logger.error(
+                        (
+                            "Task id=%s path=%s worker=%s failed to shut down "
+                            "heartbeat thread within timeout"
+                        ),
+                        self.execution_id,
+                        self.path,
+                        self.worker_id,
+                    )
+
+    def handle_sigterm(self, signum, frame):
+        logger.exception(
+            "Task id=%s path=%s worker=%s received cancel signal",
+            self.execution_id,
+            self.path,
+            self.worker_id,
+        )
+        raise TaskCancelledError("SIGTERM received")
 
     def save_task_result(self, return_value=None, exception=None):
         if self.lease_lost_event.is_set():
@@ -326,3 +334,27 @@ def try_acquire_lease(execution_id, attempt):
             worker_id,
         )
         return execution
+
+
+@contextlib.contextmanager
+def try_register_sigterm_handler(func):
+    # We only want to register sigterm handlers within Cloud Run Jobs
+    # execution environments, which will be in the main thread.
+    # We do NOT want to register sigterm handlers when we are within
+    # a Django view.
+    if threading.current_thread() is not threading.main_thread():
+        yield  # We're not in the main thread, so we can silently ignore.
+        return
+    old_handler = signal.getsignal(signal.SIGTERM)
+    try:
+        try:
+            signal.signal(signal.SIGTERM, func)
+        except ValueError:
+            logger.exception("Could not register SIGTERM handler")
+        yield
+    finally:
+        if old_handler is not None:
+            try:
+                signal.signal(signal.SIGTERM, old_handler)
+            except ValueError:
+                pass  # Already logged

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from traceback import format_exception
 
-from django.db import models, transaction
+from django.db import models
 from django.tasks import (
     DEFAULT_TASK_BACKEND_ALIAS,
     DEFAULT_TASK_QUEUE_NAME,
@@ -13,7 +13,6 @@ from django.tasks import (
     task_backends,
 )
 from django.tasks.base import DEFAULT_TASK_PRIORITY, TaskError
-from django.utils import timezone
 from django.utils.module_loading import import_string
 
 logger = logging.getLogger("django_tasks_google")
@@ -168,35 +167,6 @@ class TaskExecution(models.Model):
     @property
     def is_finished(self):
         return self.status in (TaskResultStatus.SUCCESSFUL, TaskResultStatus.FAILED)
-
-    def cancel(self, force=False):
-        if force and not self.cloud_run_job_execution_name:
-            raise NotImplementedError("Only Cloud Run Jobs may be forcibly cancelled")
-
-        with transaction.atomic():
-            now = timezone.now()
-            self.lease_worker_id = None
-            self.lease_expires_at = None
-            self.cancelled_at = now
-            self.finished_at = now
-            self.status = TaskResultStatus.FAILED
-            self.save(
-                update_fields=[
-                    "lease_worker_id",
-                    "lease_expires_at",
-                    "cancelled_at",
-                    "finished_at",
-                    "status",
-                ],
-            )
-
-        if force:
-            from google.cloud import run_v2
-
-            client = run_v2.ExecutionsClient()
-            client.cancel_execution(
-                run_v2.CancelExecutionRequest(name=self.cloud_run_job_execution_name)
-            )
 
     def append_error_entry(self, exception: BaseException):
         exception_type = type(exception)

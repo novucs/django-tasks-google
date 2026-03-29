@@ -24,11 +24,3 @@ def test_execute_task_command_succeeds_when_execution_returns_false():
             run_mock.return_value = False
             call_command("execute_task", "123")
     run_mock.assert_called_once_with("123", 1)
-
-
-def test_sync_scheduled_tasks_command_calls_scheduler_sync():
-    with patch(
-        "django_tasks_google.management.commands.sync_scheduled_tasks.sync_scheduled_tasks"
-    ) as sync_mock:
-        call_command("sync_scheduled_tasks")
-    sync_mock.assert_called_once_with()

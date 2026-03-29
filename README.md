@@ -132,6 +132,11 @@ from django.tasks import task
 @task(queue_name="default")  # Cloud Tasks queue
 def send_notification(user_id: int):
     return {"user_id": user_id, "status": "sent"}
+
+
+@task(backend="jobs", queue_name="my-job")  # Cloud Run Job
+def recompute_analytics():
+    return {"ok": True}
 ```
 
 ### Enqueue
@@ -149,26 +154,7 @@ print(result.return_value)
 print(result.errors)
 ```
 
-## Cloud Run Jobs (long-running work)
-
-```python
-@task(backend="jobs", queue_name="my-job")  # Cloud Run Job
-def recompute_analytics():
-    return {"ok": True}
-```
-
-Cancel a running execution:
-
-```python
-from django_tasks_google.models import TaskExecution
-
-execution = TaskExecution.objects.get(pk=result.id)
-execution.cancel()
-```
-
-> Only Cloud Run Job executions can be cancelled.
-
-## Scheduling (cron)
+## Schedule tasks (cron)
 
 ```python
 from django_tasks_google.scheduler import schedule_task
@@ -185,22 +171,80 @@ This creates a `ScheduledTask` and syncs it to Cloud Scheduler.
 
 You can also manage scheduled tasks via Django admin.
 
-⚠️ Deleting a ScheduledTask does not automatically remove the Cloud Scheduler job. Use:
+To delete a `ScheduledTask` from both the database and Cloud Scheduler:
 
 ```python
-from django_tasks_google.scheduler import delete_cloud_scheduler_job_if_exists
+from django_tasks_google.scheduler import delete_scheduled_task
 
-delete_cloud_scheduler_job_if_exists(scheduled_task.cloud_scheduler_job_name)
-scheduled_task.delete()
+delete_scheduled_task(scheduled_task.pk)
 ```
 
-## How scheduling works
+### How scheduling works
 
 1. **Cloud Scheduler** calls your app (`/tasks/schedule/`)
 2. Your app calls `task.enqueue()`
 3. The task runs via the configured backend
 
 All executions go through the same pipeline, so scheduling behaves the same as manual enqueueing.
+
+## Cancelling Tasks
+
+### Graceful Cancellation
+
+To support graceful cancellation, your task should periodically check whether it has been cancelled:
+
+```python
+from django.tasks import task, TaskContext
+from django_tasks_google.base import is_task_cancelled
+
+
+@task(queue_name="my-queue", takes_context=True)
+def batch_process(context: TaskContext):
+    while not is_task_cancelled(context):
+        ...  # Perform work
+```
+
+To cancel the task:
+
+```python
+from django_tasks_google.base import cancel_task
+
+result = batch_process.enqueue()
+cancel_task(result.id)
+```
+
+> **Note:** Cancellation is not immediate. Tasks become aware of cancellation during the heartbeat check, so there may
+> be a short delay before `is_task_cancelled(context)` returns `True`.
+> Passing `is_task_cancelled(context, refresh=True)` will immediately check the database.
+
+### Forceful Cancellation (Cloud Run Jobs only)
+
+Forceful cancellation is only supported with the `CloudRunJobsBackend`.
+
+This sends a `SIGTERM` to the container, causing a `TaskCancelledError` to be raised inside the task. Use this to handle
+cleanup:
+
+```python
+from django.tasks import task
+from django_tasks_google.base import TaskCancelledError
+
+
+@task(backend="jobs", queue_name="my-job")
+def batch_process():
+    try:
+        ...  # Perform work
+    except TaskCancelledError:
+        ...  # Cleanup logic
+```
+
+To forcefully cancel the task:
+
+```python
+from django_tasks_google.base import cancel_task
+
+result = batch_process.enqueue()
+cancel_task(result.id, force=True)
+```
 
 ## Data model
 
@@ -209,56 +253,67 @@ All executions go through the same pipeline, so scheduling behaves the same as m
 
 ## Configuration
 
-### Backend `OPTIONS`
+### Required settings
 
-| Option                                | Default                                   | Applies to          | Description                                     |
-|---------------------------------------|-------------------------------------------|---------------------|-------------------------------------------------|
-| `project_id` **(Required)**           | -                                         | All                 | GCP project ID                                  |
-| `location` **(Required)**             | -                                         | All                 | GCP region                                      |
-| `base_url` **(Required)**             | -                                         | All                 | Base URL for task endpoints                     |
-| `oidc_service_account` **(Required)** | -                                         | All                 | Service account used for authenticated requests |
-| `oidc_audience`                       | Derived from `base_url`                   | All                 | OIDC audience override                          |
-| `execute_url`                         | `<base_url>/execute/`                     | All                 | Override execute endpoint                       |
-| `schedule_url`                        | `<base_url>/schedule/`                    | All                 | Override schedule endpoint                      |
-| `heartbeat_enabled`                   | `True`                                    | All                 | Enable heartbeat tracking                       |
-| `heartbeat_interval_seconds`          | 10                                        | All                 | Interval between heartbeats                     |
-| `heartbeat_timeout_seconds`           | 30                                        | All                 | Time before execution is considered stalled     |
-| `heartbeat_join_timeout_seconds`      | 5                                         | All                 | Time to wait for heartbeat shutdown             |
-| `command`                             | `["python", "manage.py", "execute_task"]` | Cloud Run Jobs only | Command executed by the job                     |
+| Option                 | Description                                                                                                                               |
+|------------------------|-------------------------------------------------------------------------------------------------------------------------------------------|
+| `project_id`           | Your Google Cloud project ID. Used to locate Cloud Tasks queues, Cloud Run Jobs, and Scheduler resources.                                 |
+| `location`             | GCP region where your resources are deployed (e.g. `us-central1`). Must match your Cloud Tasks / Cloud Run configuration.                 |
+| `base_url`             | Public URL where your Django app receives task requests. Must be reachable by Google Cloud services.                                      |
+| `oidc_service_account` | Service account used by GCP to authenticate requests to your app. Must have permission to invoke your service (e.g. `roles/run.invoker`). |
 
-**Constraint:**
-`heartbeat_interval_seconds` must be ≤ `heartbeat_timeout_seconds`.
+### Request & routing
 
-## Management Commands
+| Option          | Default                 | Description                                                                                                                                                                                                                                      |
+|-----------------|-------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `oidc_audience` | Derived from `base_url` | Audience value expected in the OIDC token sent by GCP. Defaults to the **origin of `base_url` (scheme + host, no path)**, matching Cloud Run’s default auth behavior. Change only if your service validates tokens against a different audience. |
+| `execute_url`   | `<base_url>/execute/`   | Endpoint that receives task execution requests. Change if you mount task URLs at a different path.                                                                                                                                               |
+| `schedule_url`  | `<base_url>/schedule/`  | Endpoint used by Cloud Scheduler to trigger tasks. Change if your scheduling endpoint lives elsewhere.                                                                                                                                           |
 
-### `sync_scheduled_tasks`
+> Example:
+> `base_url = "https://my-app.run.app/tasks/"`
+> → `oidc_audience = "https://my-app.run.app"`
 
-**Ensures your Django `ScheduledTask` models exist in Google Cloud Scheduler.**
+### Execution behavior
 
-While the Django admin and `schedule_task` function handle syncing automatically, run this command to force a
-resync - ideal for initial deployments or after manual database edits.
+| Option                            | Default                                   | Description                                                                                                                                                       |
+|-----------------------------------|-------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `run_once`                        | `False`                                   | If `True`, the task runs only on the first attempt and will not retry on failure or redelivery. Use for non-idempotent tasks where duplicate execution is unsafe. |
+| `command` *(Cloud Run Jobs only)* | `["python", "manage.py", "execute_task"]` | Command executed inside the Cloud Run Job container. Change if your task runner entrypoint differs.                                                               |
 
-```bash
-python manage.py sync_scheduled_tasks
-```
+### Heartbeat & reliability
 
-* **Creates:** Adds any missing tasks to GCP.
-* **Updates:** Syncs cron expressions and arguments for existing tasks.
-* **Note:** This command **does not delete** jobs from GCP that are missing from your database, preventing accidental
-  data loss in shared GCP projects.
+These settings help detect and recover from stalled or crashed tasks.
 
-### `execute_task`
+| Option                           | Default | Description                                                                                                                                               |
+|----------------------------------|---------|-----------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `heartbeat_enabled`              | `True`  | Enables periodic “I’m alive” updates during execution. Heartbeats run in a separate thread and are not affected by task execution or blocking operations. |
+| `heartbeat_interval_seconds`     | `10`    | How often the heartbeat is recorded. Lower values detect failures faster but increase database writes.                                                    |
+| `heartbeat_timeout_seconds`      | `30`    | Time without a heartbeat before a task is considered stalled and its lease is released.                                                                   |
+| `heartbeat_join_timeout_seconds` | `5`     | Time to wait for the heartbeat thread to shut down cleanly when the task exits.                                                                           |
 
-**The execution engine for Cloud Run Jobs.**
+> ⚠️ **Important:** If `heartbeat_enabled=False`, you must ensure
+> `heartbeat_timeout_seconds` is **longer than your longest-running task**.
+>
+> If the timeout is exceeded, the task is considered stalled and **its lease is released**.
+> This means the running task instance may lose ownership and **must not write results or update state**, as another
+> worker may take over execution.
 
-You won't typically run this manually; it is the command Google Cloud invokes to process long-running work.
+### Storage & limits
 
-```bash
-python manage.py execute_task <execution_id>
-```
+| Option                | Default | Description                                                                                                 |
+|-----------------------|---------|-------------------------------------------------------------------------------------------------------------|
+| `max_history_entries` | `100`   | Maximum number of error entries and worker attempts stored per task execution. Older entries are discarded. |
 
-* **Internal logic:** Manages the heartbeat, runs the task, and records the result.
-* **Debugging:** Use this to re-run a specific `execution_id` locally for troubleshooting.
+### Caching (GCP metadata)
+
+These options reduce calls to Google Cloud APIs by caching queue/job configuration.
+
+| Option                   | Default                 | Description                                                                        |
+|--------------------------|-------------------------|------------------------------------------------------------------------------------|
+| `cache_alias`            | `"default"`             | Django cache used to store GCP metadata (e.g. retry limits).                       |
+| `cache_prefix`           | `"django-tasks-google"` | Prefix applied to cache keys to avoid collisions with other application data.      |
+| `cache_ttl_max_attempts` | `600`                   | Time (in seconds) to cache `max_attempts` from GCP. Set to `0` to disable caching. |
 
 ## Development
 
@@ -268,6 +323,7 @@ uv run pre-commit run --all-files
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest
+DJANGO_SETTINGS_MODULE=tests.settings uv run python -m django makemigrations --check --dry-run
 ```
 
 ## References
