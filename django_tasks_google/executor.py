@@ -103,7 +103,7 @@ class TaskExecutor:
                     )
 
     def handle_sigterm(self, signum, frame):
-        logger.exception(
+        logger.warning(
             "Task id=%s path=%s worker=%s received cancel signal",
             self.execution_id,
             self.path,
