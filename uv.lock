@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -300,6 +300,7 @@ dependencies = [
     { name = "google-cloud-run" },
     { name = "google-cloud-scheduler" },
     { name = "google-cloud-tasks" },
+    { name = "google-cloud-workflows" },
     { name = "requests" },
 ]
 
@@ -319,6 +320,7 @@ requires-dist = [
     { name = "google-cloud-run", specifier = ">=0.1.0" },
     { name = "google-cloud-scheduler", specifier = ">=2.0.0" },
     { name = "google-cloud-tasks", specifier = ">=2.0.0" },
+    { name = "google-cloud-workflows", specifier = ">=1.21.0" },
     { name = "requests", specifier = ">=2.0.0" },
 ]
 
@@ -423,6 +425,22 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b6/58/0238b71de170b92ef359e53047a3d6ff9618c04ee255cbc6def53ab79e11/google_cloud_tasks-2.21.0.tar.gz", hash = "sha256:d28f33248553faf0ff029e1981aab56cd13bd933635c3bc33aa187675e7e14d1", size = 351784, upload-time = "2026-01-15T13:04:43.071Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b4/9d/a7f098037fb56f1d69fbfad95f58bf322a4d0dbb6cafcf380c9535730cc0/google_cloud_tasks-2.21.0-py3-none-any.whl", hash = "sha256:4bf288876892a0afac30658fc42925ccb732d3c4433a8ea568de1d67fde738f2", size = 295211, upload-time = "2026-01-15T13:02:52.377Z" },
+]
+
+[[package]]
+name = "google-cloud-workflows"
+version = "1.21.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "google-api-core", extra = ["grpc"] },
+    { name = "google-auth" },
+    { name = "grpcio" },
+    { name = "proto-plus" },
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8a/39/80470566037daa86b6439598a667f4672369b1e3221275e0cc18bd6b7ae3/google_cloud_workflows-1.21.0.tar.gz", hash = "sha256:19a33f7f2209487274afff1ccf668360619d216c3e2d78269e54452aebfb7b62", size = 222811, upload-time = "2026-03-26T22:17:16.413Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b4/67/3cfb7d13a2fabb35ee36c84bfb8bdd50b82eaeacd1e01f616d82e520e6b2/google_cloud_workflows-1.21.0-py3-none-any.whl", hash = "sha256:0153999c97dd7d102609f54d577a6fc60eb80412639f8da6c9c514410e190030", size = 207856, upload-time = "2026-03-26T22:15:14.939Z" },
 ]
 
 [[package]]
