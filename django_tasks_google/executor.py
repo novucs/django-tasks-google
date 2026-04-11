@@ -254,9 +254,57 @@ def execute_task(execution_id, attempt, *, backend=None):
             sender=type(execution.backend),
             task_result=task_result,
         )
+        _deliver_callback_if_needed(execution_id)
 
     # Only attempt to retry if the task has been put back to "READY" status.
     return task_result.status == TaskResultStatus.READY
+
+
+def _deliver_callback_if_needed(execution_id):
+    """POST the task outcome to ``TaskExecution.callback_url`` when set.
+
+    Used by Cloud Workflows' ``events.await_callback`` pattern: the workflow
+    creates a one-shot callback URL, submits the task through ``/tasks/enqueue/``
+    with that URL, and then waits. On terminal status we POST the outcome here.
+
+    Non-blocking: all failures are logged; the executor's return value (and
+    thus Cloud Tasks retry signaling) is unaffected. Idempotent via a
+    conditional atomic ``update`` on ``callback_delivered_at``.
+    """
+    from django_tasks_google.auth import post_with_oidc
+
+    execution = TaskExecution.objects.filter(pk=execution_id).first()
+    if (
+        execution is None
+        or not execution.callback_url
+        or execution.callback_delivered_at
+    ):
+        return
+
+    body = {
+        "execution_id": str(execution.pk),
+        "status": execution.status,
+        "return_value": execution.return_value,
+        "errors": execution.errors,
+    }
+    try:
+        response = post_with_oidc(
+            execution.callback_url,
+            audience=execution.callback_url,
+            json_body=body,
+        )
+        response.raise_for_status()
+    except Exception:
+        logger.exception(
+            "Task id=%s failed to deliver workflow callback to %s",
+            execution.pk,
+            execution.callback_url,
+        )
+        return
+
+    TaskExecution.objects.filter(
+        pk=execution_id, callback_delivered_at__isnull=True
+    ).update(callback_delivered_at=timezone.now())
 
 
 def try_acquire_lease(execution_id, attempt, *, backend=None):

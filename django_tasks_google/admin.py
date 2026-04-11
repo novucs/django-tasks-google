@@ -3,8 +3,9 @@ import logging
 from django.contrib import admin, messages
 
 from django_tasks_google.forms import ScheduledTaskAdminForm
-from django_tasks_google.models import ScheduledTask
+from django_tasks_google.models import ScheduledTask, WorkflowDefinition
 from django_tasks_google.scheduler import delete_cloud_scheduler_job_if_exists
+from django_tasks_google.workflow import delete_cloud_workflow_if_exists
 
 logger = logging.getLogger("django_tasks_google")
 
@@ -97,5 +98,116 @@ class ScheduledTaskAdmin(admin.ModelAdmin):
             self.message_user(
                 request,
                 f"Cloud Scheduler deletion failed for {task.name}: {err}",
+                messages.WARNING,
+            )
+
+
+@admin.register(WorkflowDefinition)
+class WorkflowDefinitionAdmin(admin.ModelAdmin):
+    list_display = (
+        "name",
+        "project_id",
+        "location",
+        "synced_at",
+        "updated_at",
+    )
+    list_filter = ("location", "project_id")
+    search_fields = ("name", "description")
+    readonly_fields = (
+        "cloud_workflow_resource_name",
+        "synced_at",
+        "created_at",
+        "updated_at",
+    )
+    fieldsets = (
+        ("General Info", {"fields": ("name", "description")}),
+        (
+            "GCP Configuration",
+            {"fields": ("project_id", "location", "service_account")},
+        ),
+        (
+            "Definition",
+            {
+                "fields": ("definition",),
+                "description": "Cloud Workflows YAML or JSON source.",
+            },
+        ),
+        (
+            "Sync Status",
+            {
+                "fields": (
+                    "cloud_workflow_resource_name",
+                    "synced_at",
+                    "created_at",
+                    "updated_at",
+                )
+            },
+        ),
+    )
+    actions = ["sync_workflows"]
+
+    @admin.action(description="Sync selected workflows with Cloud Workflows")
+    def sync_workflows(self, request, queryset):
+        for workflow_definition in queryset:
+            try:
+                workflow_definition.sync()
+                self.message_user(
+                    request,
+                    f"Successfully synced '{workflow_definition.name}'",
+                    messages.SUCCESS,
+                )
+            except Exception as err:
+                logger.exception(
+                    "Failed syncing workflow definition name=%s id=%s",
+                    workflow_definition.name,
+                    workflow_definition.pk,
+                )
+                self.message_user(
+                    request,
+                    f"Failed to sync '{workflow_definition.name}': {err}",
+                    messages.ERROR,
+                )
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        try:
+            obj.sync()
+        except Exception as err:
+            logger.exception(
+                "Sync failed after saving workflow definition name=%s id=%s",
+                obj.name,
+                obj.pk,
+            )
+            self.message_user(
+                request, f"Model saved but sync failed: {err}", messages.WARNING
+            )
+
+    def delete_model(self, request, obj):
+        self._cleanup_cloud_workflow(request, obj)
+        super().delete_model(request, obj)
+
+    def delete_queryset(self, request, queryset):
+        for obj in queryset:
+            self._cleanup_cloud_workflow(request, obj)
+        super().delete_queryset(request, queryset)
+
+    def _cleanup_cloud_workflow(self, request, workflow_definition):
+        try:
+            delete_cloud_workflow_if_exists(
+                workflow_definition.cloud_workflow_resource_name
+            )
+        except Exception as err:
+            logger.exception(
+                "Cloud Workflows cleanup failed name=%s id=%s resource_name=%s",
+                workflow_definition.name,
+                workflow_definition.pk,
+                workflow_definition.cloud_workflow_resource_name,
+            )
+            self.message_user(
+                request,
+                (
+                    f"Cloud Workflows deletion failed for "
+                    f"{workflow_definition.name}: {err}"
+                ),
                 messages.WARNING,
             )

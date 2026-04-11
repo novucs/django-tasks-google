@@ -3,10 +3,16 @@ from types import SimpleNamespace
 from unittest.mock import PropertyMock, patch
 
 import pytest
+import requests
 from django.tasks.base import TaskResultStatus
 from django.utils import timezone
 
-from django_tasks_google.executor import TaskExecutor, execute_task, try_acquire_lease
+from django_tasks_google.executor import (
+    TaskExecutor,
+    _deliver_callback_if_needed,
+    execute_task,
+    try_acquire_lease,
+)
 from django_tasks_google.models import TaskExecution
 
 
@@ -154,3 +160,103 @@ def test_execute_task_failure_returns_true_and_records_error(execution):
     assert execution.status == TaskResultStatus.READY
     assert len(execution.errors) == 1
     assert execution.errors[0]["exception_class_path"].endswith("ValueError")
+
+
+@pytest.mark.django_db
+def test_deliver_callback_noop_without_callback_url(execution):
+    with patch("django_tasks_google.auth.post_with_oidc") as post_mock:
+        _deliver_callback_if_needed(execution.pk)
+    post_mock.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_deliver_callback_noop_when_already_delivered(execution):
+    execution.callback_url = "https://workflowexecutions.googleapis.com/v1/cb/abc"
+    execution.callback_delivered_at = timezone.now()
+    execution.save(update_fields=["callback_url", "callback_delivered_at"])
+
+    with patch("django_tasks_google.auth.post_with_oidc") as post_mock:
+        _deliver_callback_if_needed(execution.pk)
+    post_mock.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_deliver_callback_posts_and_marks_delivered_on_success(execution):
+    execution.status = TaskResultStatus.SUCCESSFUL
+    execution.return_value = {"ok": True}
+    execution.callback_url = "https://workflowexecutions.googleapis.com/v1/cb/abc"
+    execution.save(update_fields=["status", "return_value", "callback_url"])
+
+    response = SimpleNamespace(raise_for_status=lambda: None)
+    with patch(
+        "django_tasks_google.auth.post_with_oidc",
+        return_value=response,
+    ) as post_mock:
+        _deliver_callback_if_needed(execution.pk)
+
+    post_mock.assert_called_once()
+    call_kwargs = post_mock.call_args.kwargs
+    assert (
+        call_kwargs["audience"] == "https://workflowexecutions.googleapis.com/v1/cb/abc"
+    )
+    body = call_kwargs["json_body"]
+    assert body["execution_id"] == str(execution.pk)
+    assert body["status"] == TaskResultStatus.SUCCESSFUL
+    assert body["return_value"] == {"ok": True}
+
+    execution.refresh_from_db()
+    assert execution.callback_delivered_at is not None
+
+
+@pytest.mark.django_db
+def test_deliver_callback_swallows_http_failure_without_marking_delivered(execution):
+    execution.status = TaskResultStatus.FAILED
+    execution.callback_url = "https://workflowexecutions.googleapis.com/v1/cb/abc"
+    execution.save(update_fields=["status", "callback_url"])
+
+    with patch(
+        "django_tasks_google.auth.post_with_oidc",
+        side_effect=requests.RequestException("boom"),
+    ):
+        # Must not raise out of the executor
+        _deliver_callback_if_needed(execution.pk)
+
+    execution.refresh_from_db()
+    assert execution.callback_delivered_at is None
+
+
+@pytest.mark.django_db
+def test_execute_task_success_invokes_callback_when_url_set(execution):
+    execution.callback_url = "https://workflowexecutions.googleapis.com/v1/cb/abc"
+    execution.save(update_fields=["callback_url"])
+
+    fake_backend = SimpleNamespace(
+        heartbeat_enabled=False,
+        heartbeat_timeout=timedelta(seconds=3),
+        heartbeat_interval=timedelta(seconds=1),
+        heartbeat_join_timeout=timedelta(seconds=1),
+        run_once=False,
+        max_history_entries=100,
+    )
+    fake_task = SimpleNamespace(
+        call=lambda *args, **kwargs: 42,
+        module_path="tests.fake_tasks.sample_task",
+    )
+
+    response = SimpleNamespace(raise_for_status=lambda: None)
+    with (
+        patch.object(TaskExecution, "task", new_callable=PropertyMock) as task_prop,
+        patch.object(
+            TaskExecution, "backend", new_callable=PropertyMock
+        ) as backend_prop,
+        patch(
+            "django_tasks_google.auth.post_with_oidc", return_value=response
+        ) as post_mock,
+    ):
+        task_prop.return_value = fake_task
+        backend_prop.return_value = fake_backend
+        execute_task(execution.pk, attempt=1)
+
+    post_mock.assert_called_once()
+    execution.refresh_from_db()
+    assert execution.callback_delivered_at is not None

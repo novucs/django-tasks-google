@@ -72,6 +72,7 @@ class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
         self.schedule_url = self.options.get(
             "schedule_url", self.base_url + "schedule/"
         )
+        self.enqueue_url = self.options.get("enqueue_url", self.base_url + "enqueue/")
         self.oidc_audience = self.options.get(
             "oidc_audience", get_oidc_audience(self.base_url)
         )
@@ -80,7 +81,7 @@ class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
         self.cache_prefix = self.options.get("cache_prefix", "django-tasks-google")
         self.cache_ttl_max_attempts = self.options.get("cache_ttl_max_attempts", 600)
 
-    def enqueue(self, task, args, kwargs):
+    def enqueue(self, task, args, kwargs, *, callback_url=None):
         self.validate_task(task)
         with transaction.atomic():
             execution = TaskExecution.objects.create(
@@ -92,6 +93,7 @@ class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
                 takes_context=task.takes_context,
                 args=list(args),
                 kwargs=dict(kwargs),
+                callback_url=callback_url,
             )
             task_result = execution.task_result
             transaction.on_commit(partial(self.enqueue_gcp, execution.pk))

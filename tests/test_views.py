@@ -1,8 +1,9 @@
+import json
 from unittest.mock import ANY, patch
 
 import pytest
 
-from django_tasks_google.models import ScheduledTask
+from django_tasks_google.models import ScheduledTask, TaskExecution
 
 
 @pytest.mark.django_db
@@ -155,3 +156,130 @@ def test_schedule_task_view_sets_idempotency_and_enqueues(client):
     assert response.status_code == 204
     assert task.idempotency_key == expected_idempotency_key
     enqueue_mock.assert_called_once_with(task)
+
+
+MALFORMED_ENQUEUE_REQUESTS = [
+    pytest.param("not-json", id="invalid_json"),
+    pytest.param(json.dumps([1, 2, 3]), id="non_object_body"),
+    pytest.param(
+        json.dumps({"task_path": "tests.does_not_exist"}),
+        id="unknown_task_path",
+    ),
+    # _is_task is false for plain callables like json.loads
+    pytest.param(json.dumps({"task_path": "json.loads"}), id="non_task_path"),
+]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("body", MALFORMED_ENQUEUE_REQUESTS)
+def test_enqueue_task_view_returns_400_for_malformed_request(client, body):
+    response = client.post(
+        "/enqueue/",
+        data=body,
+        content_type="application/json",
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.django_db
+def test_enqueue_task_view_returns_400_when_backend_is_not_google_backend(client):
+    from django.tasks.backends.immediate import ImmediateBackend
+
+    fake_backend = ImmediateBackend(
+        "default", {"BACKEND": "django.tasks.backends.immediate.ImmediateBackend"}
+    )
+    # Force both the form's validate_backend lookup AND the task.backend
+    # fallback to return a non-DjangoTasksGoogleBackend instance.
+    with patch(
+        "django_tasks_google.forms.task_backends",
+        new={"default": fake_backend},
+    ):
+        response = client.post(
+            "/enqueue/",
+            data=json.dumps(
+                {
+                    "task_path": "tests.fake_tasks.sample_task",
+                    "backend": "default",
+                }
+            ),
+            content_type="application/json",
+        )
+    assert response.status_code == 400
+
+
+@pytest.mark.django_db
+def test_enqueue_task_view_returns_auth_status_on_auth_failure(client):
+    with patch("django_tasks_google.auth.handle_oidc_auth") as auth_mock:
+        auth_mock.return_value = (False, 401, "bad-token")
+        response = client.post(
+            "/enqueue/",
+            data=json.dumps({"task_path": "tests.fake_tasks.sample_task"}),
+            content_type="application/json",
+            HTTP_AUTHORIZATION="Bearer token",
+        )
+    assert response.status_code == 401
+
+
+@pytest.mark.django_db
+def test_enqueue_task_view_creates_execution_with_callback_url(client):
+    with (
+        patch("django_tasks_google.auth.handle_oidc_auth") as auth_mock,
+        patch(
+            "django_tasks_google.backends.CloudTasksBackend.enqueue_gcp",
+        ) as enqueue_gcp_mock,
+    ):
+        auth_mock.return_value = (True, None, None)
+        enqueue_gcp_mock.return_value = None
+        response = client.post(
+            "/enqueue/",
+            data=json.dumps(
+                {
+                    "task_path": "tests.fake_tasks.sample_task",
+                    "backend": "default",
+                    "args": [1, 2],
+                    "kwargs": {"a": "b"},
+                    "callback_url": "https://workflowexecutions.googleapis.com/v1/callbacks/abc",
+                }
+            ),
+            content_type="application/json",
+            HTTP_AUTHORIZATION="Bearer token",
+        )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert "execution_id" in body
+    execution = TaskExecution.objects.get(pk=body["execution_id"])
+    assert (
+        execution.callback_url
+        == "https://workflowexecutions.googleapis.com/v1/callbacks/abc"
+    )
+    assert execution.args == [1, 2]
+    assert execution.kwargs == {"a": "b"}
+    assert execution.backend_alias == "default"
+
+
+@pytest.mark.django_db
+def test_enqueue_task_view_applies_queue_override(client):
+    with (
+        patch("django_tasks_google.auth.handle_oidc_auth") as auth_mock,
+        patch(
+            "django_tasks_google.backends.CloudTasksBackend.enqueue_gcp",
+        ) as enqueue_gcp_mock,
+    ):
+        auth_mock.return_value = (True, None, None)
+        enqueue_gcp_mock.return_value = None
+        response = client.post(
+            "/enqueue/",
+            data=json.dumps(
+                {
+                    "task_path": "tests.fake_tasks.sample_task",
+                    "queue_name": "high-priority",
+                }
+            ),
+            content_type="application/json",
+            HTTP_AUTHORIZATION="Bearer token",
+        )
+
+    assert response.status_code == 202
+    execution = TaskExecution.objects.get(pk=response.json()["execution_id"])
+    assert execution.queue_name == "high-priority"

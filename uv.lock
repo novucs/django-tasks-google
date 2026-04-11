@@ -301,6 +301,7 @@ dependencies = [
     { name = "google-cloud-scheduler" },
     { name = "google-cloud-tasks" },
     { name = "google-cloud-workflows" },
+    { name = "pyyaml" },
     { name = "requests" },
 ]
 
@@ -321,6 +322,7 @@ requires-dist = [
     { name = "google-cloud-scheduler", specifier = ">=2.0.0" },
     { name = "google-cloud-tasks", specifier = ">=2.0.0" },
     { name = "google-cloud-workflows", specifier = ">=1.21.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.0.0" },
 ]
 

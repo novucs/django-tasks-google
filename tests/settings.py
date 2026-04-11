@@ -44,7 +44,7 @@ TEMPLATES = [
 TASKS = {
     "default": {
         "BACKEND": "django_tasks_google.backends.CloudTasksBackend",
-        "QUEUES": ["default"],
+        "QUEUES": ["default", "high-priority"],
         "OPTIONS": {
             "project_id": "test-project",
             "location": "us-central1",
