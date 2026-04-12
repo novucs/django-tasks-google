@@ -18,7 +18,7 @@ def test_handle_oidc_auth_rejects_missing_bearer_header():
     ok, status, error = handle_oidc_auth(_request(""), "aud", "svc@example.com")
     assert ok is False
     assert status == 401
-    assert isinstance(error, "str") and "Authorization header" in error
+    assert isinstance(error, str) and "Authorization header" in error
 
 
 def test_handle_oidc_auth_rejects_invalid_token():
@@ -54,7 +54,7 @@ def test_handle_oidc_auth_rejects_unexpected_email():
         )
     assert ok is False
     assert status == 403
-    assert isinstance(error, "str") and "Unexpected caller email" in error
+    assert isinstance(error, str) and "Unexpected caller email" in error
 
 
 def test_handle_oidc_auth_rejects_unverified_email():
@@ -65,7 +65,7 @@ def test_handle_oidc_auth_rejects_unverified_email():
         )
     assert ok is False
     assert status == 403
-    assert isinstance(error, "str") and "not verified" in error
+    assert isinstance(error, str) and "not verified" in error
 
 
 def test_handle_oidc_auth_returns_success_for_verified_expected_email():
