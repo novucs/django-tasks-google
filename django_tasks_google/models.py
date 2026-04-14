@@ -107,7 +107,7 @@ class TaskExecution(models.Model):
     lease_worker_id = models.TextField(null=True)
     lease_expires_at = models.DateTimeField(null=True)
 
-    callback_url = models.TextField(null=True, blank=True)
+    callback_url = models.TextField(null=True, blank=True, unique=True)
     callback_delivered_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):

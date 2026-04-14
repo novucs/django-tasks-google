@@ -158,6 +158,115 @@ def test_schedule_task_view_sets_idempotency_and_enqueues(client):
     enqueue_mock.assert_called_once_with(task)
 
 
+@pytest.mark.django_db
+def test_enqueue_task_view_deduplicates_on_callback_url(client):
+    callback_url = "https://workflowexecutions.googleapis.com/v1/callbacks/dedup"
+    with (
+        patch("django_tasks_google.auth.handle_oidc_auth") as auth_mock,
+        patch(
+            "django_tasks_google.backends.CloudTasksBackend.enqueue_gcp",
+        ) as enqueue_gcp_mock,
+    ):
+        auth_mock.return_value = (True, None, None)
+        enqueue_gcp_mock.return_value = None
+
+        first = client.post(
+            "/enqueue/",
+            data=json.dumps(
+                {
+                    "task_path": "tests.fake_tasks.sample_task",
+                    "callback_url": callback_url,
+                }
+            ),
+            content_type="application/json",
+            HTTP_AUTHORIZATION="Bearer token",
+        )
+        second = client.post(
+            "/enqueue/",
+            data=json.dumps(
+                {
+                    "task_path": "tests.fake_tasks.sample_task",
+                    "callback_url": callback_url,
+                }
+            ),
+            content_type="application/json",
+            HTTP_AUTHORIZATION="Bearer token",
+        )
+
+    assert first.status_code == 202
+    assert second.status_code == 200
+    assert first.json()["execution_id"] == second.json()["execution_id"]
+    assert TaskExecution.objects.filter(callback_url=callback_url).count() == 1
+
+
+@pytest.mark.django_db
+def test_enqueue_task_view_allows_duplicate_without_callback_url(client):
+    with (
+        patch("django_tasks_google.auth.handle_oidc_auth") as auth_mock,
+        patch(
+            "django_tasks_google.backends.CloudTasksBackend.enqueue_gcp",
+        ) as enqueue_gcp_mock,
+    ):
+        auth_mock.return_value = (True, None, None)
+        enqueue_gcp_mock.return_value = None
+
+        first = client.post(
+            "/enqueue/",
+            data=json.dumps({"task_path": "tests.fake_tasks.sample_task"}),
+            content_type="application/json",
+            HTTP_AUTHORIZATION="Bearer token",
+        )
+        second = client.post(
+            "/enqueue/",
+            data=json.dumps({"task_path": "tests.fake_tasks.sample_task"}),
+            content_type="application/json",
+            HTTP_AUTHORIZATION="Bearer token",
+        )
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert first.json()["execution_id"] != second.json()["execution_id"]
+
+
+@pytest.mark.django_db
+def test_enqueue_task_view_allows_different_callback_urls(client):
+    with (
+        patch("django_tasks_google.auth.handle_oidc_auth") as auth_mock,
+        patch(
+            "django_tasks_google.backends.CloudTasksBackend.enqueue_gcp",
+        ) as enqueue_gcp_mock,
+    ):
+        auth_mock.return_value = (True, None, None)
+        enqueue_gcp_mock.return_value = None
+
+        first = client.post(
+            "/enqueue/",
+            data=json.dumps(
+                {
+                    "task_path": "tests.fake_tasks.sample_task",
+                    "callback_url": "https://workflowexecutions.googleapis.com/v1/callbacks/aaa",
+                }
+            ),
+            content_type="application/json",
+            HTTP_AUTHORIZATION="Bearer token",
+        )
+        second = client.post(
+            "/enqueue/",
+            data=json.dumps(
+                {
+                    "task_path": "tests.fake_tasks.sample_task",
+                    "callback_url": "https://workflowexecutions.googleapis.com/v1/callbacks/bbb",
+                }
+            ),
+            content_type="application/json",
+            HTTP_AUTHORIZATION="Bearer token",
+        )
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert first.json()["execution_id"] != second.json()["execution_id"]
+
+
 MALFORMED_ENQUEUE_REQUESTS = [
     pytest.param("not-json", id="invalid_json"),
     pytest.param(json.dumps([1, 2, 3]), id="non_object_body"),

@@ -21,7 +21,7 @@ from django_tasks_google.forms import (
     ExecuteTaskForm,
     ScheduleTaskForm,
 )
-from django_tasks_google.models import ScheduledTask
+from django_tasks_google.models import ScheduledTask, TaskExecution
 
 logger = logging.getLogger("django_tasks_google")
 
@@ -155,6 +155,17 @@ def enqueue_task_view(request: HttpRequest) -> HttpResponse:
         logger.warning("Failed to auth enqueue of %s: %s", task.module_path, auth_error)
         return HttpResponse(status=auth_status)
 
+    callback_url: str | None = form.cleaned_data.get("callback_url") or None
+    if callback_url:
+        existing = TaskExecution.objects.filter(callback_url=callback_url).first()
+        if existing:
+            logger.info(
+                "Duplicate enqueue for callback_url=%s returning existing execution_id=%s",
+                callback_url,
+                existing.pk,
+            )
+            return JsonResponse({"execution_id": str(existing.pk)}, status=200)
+
     queue_name: str | None = form.cleaned_data.get("queue_name") or None
     task_to_enqueue = task.using(queue_name=queue_name) if queue_name else task
 
@@ -162,6 +173,6 @@ def enqueue_task_view(request: HttpRequest) -> HttpResponse:
         task_to_enqueue,
         form.cleaned_data["args"],
         form.cleaned_data["kwargs"],
-        callback_url=form.cleaned_data.get("callback_url") or None,
+        callback_url=callback_url,
     )
     return JsonResponse({"execution_id": task_result.id}, status=202)
