@@ -19,7 +19,8 @@ class Command(BaseCommand):
             "--max-age-hours",
             type=int,
             default=24,
-            help="Only retry callbacks for executions finished within this many hours (default: 24)",
+            help="Only retry callbacks for executions finished"
+            " within this many hours (default: 24)",
         )
         parser.add_argument(
             "--limit",

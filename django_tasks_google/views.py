@@ -160,7 +160,8 @@ def enqueue_task_view(request: HttpRequest) -> HttpResponse:
         existing = TaskExecution.objects.filter(callback_url=callback_url).first()
         if existing:
             logger.info(
-                "Duplicate enqueue for callback_url=%s returning existing execution_id=%s",
+                "Duplicate enqueue for callback_url=%s "
+                " returning existing execution_id=%s",
                 callback_url,
                 existing.pk,
             )

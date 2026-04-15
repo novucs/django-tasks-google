@@ -4,15 +4,14 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('django_tasks_google', '0004_workflow_support'),
+        ("django_tasks_google", "0004_workflow_support"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='taskexecution',
-            name='callback_url',
+            model_name="taskexecution",
+            name="callback_url",
             field=models.TextField(blank=True, null=True, unique=True),
         ),
     ]
