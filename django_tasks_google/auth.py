@@ -28,3 +28,29 @@ def handle_oidc_auth(
         return False, 401, "Invalid OIDC token"
 
     return True, None, None
+
+
+def post_with_oidc(
+    url: str,
+    *,
+    audience: str,
+    json_body: dict,
+    timeout: float = 30.0,
+) -> requests.Response:
+    """POST to ``url`` with an OIDC-signed ``Authorization: Bearer`` header.
+
+    The ID token is minted via ``google.oauth2.id_token.fetch_id_token`` using
+    Application Default Credentials, so this works transparently on Cloud Run,
+    Cloud Functions, local ADC, etc. The caller is responsible for catching
+    ``requests.RequestException`` and ``google.auth.exceptions.GoogleAuthError``.
+    """
+    token = id_token.fetch_id_token(_CACHED_REQUEST, audience)
+    return _HTTP_CLIENT.post(
+        url,
+        json=json_body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        timeout=timeout,
+    )

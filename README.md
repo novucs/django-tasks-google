@@ -187,6 +187,84 @@ delete_scheduled_task(scheduled_task.pk)
 
 All executions go through the same pipeline, so scheduling behaves the same as manual enqueueing.
 
+## Orchestrate tasks with Cloud Workflows
+
+Cloud Workflows provides chaining, branching, and long waits (up to a year) on
+top of your existing Django tasks — a replacement for Celery's Canvas API.
+`django-tasks-google` adds three pieces on top of the existing backends:
+
+* A `WorkflowDefinition` model + Django admin page for storing and syncing
+  workflow YAML to Cloud Workflows, mirroring how `ScheduledTask` works for
+  Cloud Scheduler.
+* A `task_subworkflow_yaml(task, ...)` helper that generates a reusable
+  subworkflow for any `@task`-decorated callable. The subworkflow enqueues the
+  task through your existing backend and waits on a GCP callback for up to a
+  configurable timeout.
+* A `/tasks/enqueue/` HTTP endpoint that the workflow calls to hand work off
+  to your Django task backend. The endpoint is authenticated with the same
+  OIDC service account as `/tasks/execute/`.
+
+### How it works
+
+1. A running workflow calls `events.create_callback_endpoint` to mint a
+   one-shot callback URL.
+2. It POSTs to your `/tasks/enqueue/` endpoint with
+   `{task_path, args, kwargs, callback_url}`.
+3. The Django executor runs the task normally. When the task reaches a
+   terminal state (`SUCCESSFUL`/`FAILED`), the executor POSTs
+   `{status, return_value, errors}` back to the callback URL using an
+   outbound OIDC-signed request, unblocking the workflow.
+
+### Define a workflow
+
+```python
+from django_tasks_google.workflow import schedule_workflow, task_subworkflow_yaml
+from myapp.tasks import send_notification
+
+definition = task_subworkflow_yaml(
+    send_notification,
+    enqueue_url="https://your-app.run.app/tasks/enqueue/",
+    timeout_seconds=3600,
+)
+schedule_workflow(
+    name="send-notification",
+    definition=definition,
+    project_id="your-project",
+    location="us-central1",
+    service_account="invoker@your-project.iam.gserviceaccount.com",
+)
+```
+
+### Chain tasks
+
+```python
+from django_tasks_google.workflow import chained_workflow_yaml
+
+chained_workflow_yaml([
+    {"name": "step1", "subworkflow": "fetch_data"},
+    {"name": "step2", "subworkflow": "process_data"},
+    {"name": "step3", "subworkflow": "notify_user"},
+])
+```
+
+### Delete a workflow
+
+```python
+from django_tasks_google.workflow import delete_workflow
+
+delete_workflow(workflow_definition.pk)
+```
+
+### Limitations
+
+* Callback delivery is at-most-once per `TaskExecution`, guarded by a
+  persistent `callback_delivered_at` marker. If the POST fails (network
+  error, workflow already timed out), the executor logs and moves on —
+  task completion is never blocked by callback delivery.
+* The `/tasks/enqueue/` endpoint does not deduplicate retries. If Cloud
+  Workflows retries the `http.post` step, a second `TaskExecution` row will
+  be created. Make tasks idempotent.
+
 ## Cancelling Tasks
 
 ### Graceful Cancellation

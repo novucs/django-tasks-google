@@ -6,6 +6,7 @@ from django import forms
 from django.apps import apps
 from django.core.exceptions import ValidationError
 from django.tasks import InvalidTaskBackend, task_backends
+from django.utils.module_loading import import_string
 
 from django_tasks_google.models import ScheduledTask
 
@@ -15,6 +16,14 @@ def validate_backend(backend: str):
         return task_backends[backend]
     except InvalidTaskBackend as err:
         raise forms.ValidationError("Invalid backend alias") from err
+
+
+def _is_task(obj) -> bool:
+    # Match the detection used by get_task_choices(): a Task instance created
+    # by django.tasks' @task decorator.
+    return (
+        hasattr(obj, "task") or hasattr(obj, "_is_task") or type(obj).__name__ == "Task"
+    )
 
 
 class ExecuteTaskForm(forms.Form):
@@ -31,6 +40,49 @@ class ScheduleTaskForm(forms.Form):
 
     def clean_backend(self):
         return validate_backend(self.cleaned_data["backend"])
+
+
+class EnqueueTaskForm(forms.Form):
+    task_path = forms.CharField()
+    backend = forms.CharField(required=False)
+    args = forms.JSONField(required=False)
+    kwargs = forms.JSONField(required=False)
+    callback_url = forms.URLField(required=False)
+    queue_name = forms.CharField(required=False)
+
+    def clean_task_path(self):
+        path = self.cleaned_data["task_path"]
+        try:
+            obj = import_string(path)
+        except (ImportError, AttributeError) as err:
+            raise forms.ValidationError("Unknown task path") from err
+        if not _is_task(obj):
+            raise forms.ValidationError(
+                "Path does not point to a @task-decorated callable"
+            )
+        return obj
+
+    def clean_backend(self):
+        alias = self.cleaned_data.get("backend") or ""
+        if not alias:
+            return None
+        return validate_backend(alias)
+
+    def clean_args(self):
+        data = self.cleaned_data.get("args")
+        if data in (None, ""):
+            return []
+        if not isinstance(data, list):
+            raise forms.ValidationError("args must be a JSON list")
+        return data
+
+    def clean_kwargs(self):
+        data = self.cleaned_data.get("kwargs")
+        if data in (None, ""):
+            return {}
+        if not isinstance(data, dict):
+            raise forms.ValidationError("kwargs must be a JSON object")
+        return data
 
 
 class ScheduledTaskAdminForm(forms.ModelForm):

@@ -6,7 +6,7 @@ from urllib.parse import urlencode, urlparse
 
 from django.core.cache import InvalidCacheBackendError, caches
 from django.core.exceptions import ImproperlyConfigured
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.tasks import TaskResultStatus
 from django.tasks.backends.base import BaseTaskBackend
 from django.tasks.signals import task_enqueued
@@ -72,6 +72,7 @@ class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
         self.schedule_url = self.options.get(
             "schedule_url", self.base_url + "schedule/"
         )
+        self.enqueue_url = self.options.get("enqueue_url", self.base_url + "enqueue/")
         self.oidc_audience = self.options.get(
             "oidc_audience", get_oidc_audience(self.base_url)
         )
@@ -80,21 +81,32 @@ class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
         self.cache_prefix = self.options.get("cache_prefix", "django-tasks-google")
         self.cache_ttl_max_attempts = self.options.get("cache_ttl_max_attempts", 600)
 
-    def enqueue(self, task, args, kwargs):
+    def enqueue(self, task, args, kwargs, *, callback_url=None):
         self.validate_task(task)
         with transaction.atomic():
-            execution = TaskExecution.objects.create(
-                priority=task.priority,
-                module_path=task.module_path,
-                backend_alias=self.alias,
-                queue_name=task.queue_name,
-                run_after=task.run_after,
-                takes_context=task.takes_context,
-                args=list(args),
-                kwargs=dict(kwargs),
-            )
+            created = True
+            try:
+                with transaction.atomic():
+                    execution = TaskExecution.objects.create(
+                        priority=task.priority,
+                        module_path=task.module_path,
+                        backend_alias=self.alias,
+                        queue_name=task.queue_name,
+                        run_after=task.run_after,
+                        takes_context=task.takes_context,
+                        args=list(args),
+                        kwargs=dict(kwargs),
+                        callback_url=callback_url,
+                    )
+            except IntegrityError:
+                if callback_url:
+                    execution = TaskExecution.objects.get(callback_url=callback_url)
+                    created = False
+                else:
+                    raise
             task_result = execution.task_result
-            transaction.on_commit(partial(self.enqueue_gcp, execution.pk))
+            if created:
+                transaction.on_commit(partial(self.enqueue_gcp, execution.pk))
         return task_result
 
     @abstractmethod

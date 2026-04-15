@@ -89,6 +89,36 @@ def test_enqueue_creates_task_execution_and_calls_enqueue_gcp(
 
 
 @pytest.mark.django_db
+def test_enqueue_handles_integrity_error_for_duplicate_callback_url(
+    django_capture_on_commit_callbacks,
+):
+    backend = task_backends["default"]
+    task = Task(
+        priority=0,
+        func=sample_task.func,
+        backend="default",
+        queue_name="default",
+        run_after=None,
+        takes_context=False,
+    )
+    callback_url = "https://workflowexecutions.googleapis.com/v1/callbacks/race"
+
+    with (
+        patch.object(backend, "enqueue_gcp", autospec=True),
+        django_capture_on_commit_callbacks(execute=True),
+    ):
+        first_result = backend.enqueue(
+            task, args=[], kwargs={}, callback_url=callback_url
+        )
+        second_result = backend.enqueue(
+            task, args=[], kwargs={}, callback_url=callback_url
+        )
+
+    assert first_result.id == second_result.id
+    assert TaskExecution.objects.filter(callback_url=callback_url).count() == 1
+
+
+@pytest.mark.django_db
 def test_get_result_returns_none_for_missing_result_id():
     backend = task_backends["default"]
     assert backend.get_result("999999") is None

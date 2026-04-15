@@ -107,6 +107,9 @@ class TaskExecution(models.Model):
     lease_worker_id = models.TextField(null=True)
     lease_expires_at = models.DateTimeField(null=True)
 
+    callback_url = models.TextField(null=True, blank=True, unique=True)
+    callback_delivered_at = models.DateTimeField(null=True, blank=True)
+
     def __str__(self):
         return (
             f"TaskExecution id={self.pk} path={self.module_path} status={self.status}"
@@ -187,3 +190,39 @@ class TaskExecution(models.Model):
                 max_history_entries,
             )
             self.errors = self.errors[-max_history_entries:]
+
+
+class WorkflowDefinition(models.Model):
+    name = models.TextField(unique=True)
+    description = models.TextField(blank=True, default="")
+    definition = models.TextField()
+    project_id = models.TextField()
+    location = models.TextField(default="us-central1")
+    service_account = models.TextField(blank=True, default="")
+
+    cloud_workflow_resource_name = models.TextField(null=True, unique=True)
+    synced_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "Workflow Definition"
+        verbose_name_plural = "Workflow Definitions"
+
+    def __str__(self):
+        return f"WorkflowDefinition id={self.pk} name={self.name}"
+
+    @property
+    def resource_name(self) -> str:
+        if self.cloud_workflow_resource_name:
+            return self.cloud_workflow_resource_name
+        return (
+            f"projects/{self.project_id}/locations/{self.location}"
+            f"/workflows/{self.name}"
+        )
+
+    def sync(self):
+        from django_tasks_google.workflow import sync_workflow_definition
+
+        sync_workflow_definition(self.pk)
