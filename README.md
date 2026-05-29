@@ -123,7 +123,7 @@ TASKS = {
     },
     "jobs": {
         "BACKEND": "django_tasks_google.backends.ProcessBackend",
-        "QUEUES": ["my-job"],
+        "QUEUES": ["default"],
         "OPTIONS": {"mode": "cloud_run_jobs"},
     },
 }
