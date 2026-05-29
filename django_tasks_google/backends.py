@@ -96,6 +96,16 @@ class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
         self.cache_alias = self.options.get("cache_alias", "default")
         self.cache_prefix = self.options.get("cache_prefix", "django-tasks-google")
         self.cache_ttl_max_attempts = self.options.get("cache_ttl_max_attempts", 600)
+        self.queue_aliases = self.options.get("queue_aliases", {})
+
+    def resolve_queue_name(self, queue_name):
+        """Map a logical queue name to the real GCP resource name.
+
+        Returns the configured alias target, or the name unchanged when no
+        alias is defined. Used only when building GCP resource paths; the
+        logical name is what gets validated and stored.
+        """
+        return self.queue_aliases.get(queue_name, queue_name)
 
     def enqueue(self, task, args, kwargs):
         self.validate_task(task)
@@ -192,10 +202,11 @@ class CloudRunJobsBackend(DjangoTasksGoogleBackend):
         with transaction.atomic():
             execution = TaskExecution.objects.select_for_update().get(pk=execution_id)
             client = run_v2.JobsClient()
+            resolved_name = self.resolve_queue_name(execution.queue_name)
             job_path = (
                 f"projects/{self.project_id}/"
                 f"locations/{self.location}/"
-                f"jobs/{execution.queue_name}"
+                f"jobs/{resolved_name}"
             )
             request = run_v2.RunJobRequest(
                 name=job_path,  # type: ignore
@@ -237,8 +248,9 @@ class CloudRunJobsBackend(DjangoTasksGoogleBackend):
         from google.cloud import run_v2
 
         client = run_v2.JobsClient()
+        resolved_name = self.resolve_queue_name(queue_name)
         job_config = client.get_job(
-            name=f"projects/{self.project_id}/locations/{self.location}/jobs/{queue_name}"
+            name=f"projects/{self.project_id}/locations/{self.location}/jobs/{resolved_name}"
         )
         retries = job_config.template.template.max_retries
         return retries + 1  # We want total attempts
@@ -283,8 +295,9 @@ class CloudTasksBackend(DjangoTasksGoogleBackend):
                 cloud_task_definition.schedule_time = schedule_time
             try:
                 max_attempts = self.get_max_attempts_with_cache(execution.queue_name)
+                resolved_name = self.resolve_queue_name(execution.queue_name)
                 cloud_task = client.create_task(
-                    parent=f"projects/{self.project_id}/locations/{self.location}/queues/{execution.queue_name}",
+                    parent=f"projects/{self.project_id}/locations/{self.location}/queues/{resolved_name}",
                     task=cloud_task_definition,
                 )
             except Exception as err:
@@ -312,8 +325,9 @@ class CloudTasksBackend(DjangoTasksGoogleBackend):
         from google.cloud import tasks_v2
 
         client = tasks_v2.CloudTasksClient()
+        resolved_name = self.resolve_queue_name(queue_name)
         queue = client.get_queue(
-            name=f"projects/{self.project_id}/locations/{self.location}/queues/{queue_name}"
+            name=f"projects/{self.project_id}/locations/{self.location}/queues/{resolved_name}"
         )
         max_attempts = queue.retry_config.max_attempts
         return max_attempts if max_attempts >= 0 else None

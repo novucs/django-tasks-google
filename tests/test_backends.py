@@ -511,3 +511,194 @@ def test_cloud_run_jobs_force_cancel_noop_without_execution_name():
         backend.force_cancel(execution)
 
     client_cls.assert_not_called()
+
+
+def _cloud_tasks_backend_with_aliases(queue_aliases):
+    return CloudTasksBackend(
+        "default",
+        {
+            "QUEUES": ["default"],
+            "OPTIONS": {
+                "project_id": "test-project",
+                "location": "us-central1",
+                "base_url": "https://example.com/tasks/",
+                "oidc_service_account": "svc@example.com",
+                "queue_aliases": queue_aliases,
+            },
+        },
+    )
+
+
+def _cloud_run_backend_with_aliases(queue_aliases):
+    return CloudRunJobsBackend(
+        "jobs",
+        {
+            "QUEUES": ["default"],
+            "OPTIONS": {
+                "project_id": "p1",
+                "location": "us-central1",
+                "base_url": "https://example.com/tasks",
+                "oidc_service_account": "svc@example.com",
+                "queue_aliases": queue_aliases,
+            },
+        },
+    )
+
+
+def test_resolve_queue_name_maps_and_falls_through():
+    backend = _cloud_tasks_backend_with_aliases(
+        {"default": "my-service-queue-name-prod"}
+    )
+    assert backend.resolve_queue_name("default") == "my-service-queue-name-prod"
+    assert backend.resolve_queue_name("other") == "other"
+
+
+def test_resolve_queue_name_without_aliases_returns_input():
+    backend = _cloud_tasks_backend_with_aliases({})
+    assert backend.resolve_queue_name("default") == "default"
+
+
+@pytest.mark.django_db
+def test_cloud_tasks_enqueue_gcp_resolves_queue_alias(
+    django_capture_on_commit_callbacks,
+):
+    backend = _cloud_tasks_backend_with_aliases(
+        {"default": "my-service-queue-name-prod"}
+    )
+    # Logical name is what gets validated against QUEUES and stored.
+    execution = TaskExecution.objects.create(
+        module_path="tests.fake_tasks.sample_task",
+        backend_alias="default",
+        queue_name="default",
+        args=[],
+        kwargs={},
+    )
+
+    fake_cloud_task = type("CloudTask", (), {"name": "projects/p/tasks/t1"})()
+
+    with (
+        patch.object(backend, "get_max_attempts_with_cache", return_value=5),
+        patch("google.cloud.tasks_v2.CloudTasksClient", autospec=True) as client_cls,
+        patch("django_tasks_google.backends.task_enqueued.send_robust"),
+        django_capture_on_commit_callbacks(execute=True),
+    ):
+        client = client_cls.return_value
+        client.create_task.return_value = fake_cloud_task
+
+        backend.enqueue_gcp(execution.pk)
+
+    parent = client.create_task.call_args.kwargs["parent"]
+    assert parent == (
+        "projects/test-project/locations/us-central1/queues/my-service-queue-name-prod"
+    )
+    # The stored logical name is untouched.
+    execution.refresh_from_db()
+    assert execution.queue_name == "default"
+
+
+@pytest.mark.django_db
+def test_cloud_tasks_enqueue_gcp_unmapped_queue_falls_through(
+    django_capture_on_commit_callbacks,
+):
+    backend = _cloud_tasks_backend_with_aliases({"other": "something-else"})
+    execution = TaskExecution.objects.create(
+        module_path="tests.fake_tasks.sample_task",
+        backend_alias="default",
+        queue_name="default",
+        args=[],
+        kwargs={},
+    )
+
+    fake_cloud_task = type("CloudTask", (), {"name": "projects/p/tasks/t1"})()
+
+    with (
+        patch.object(backend, "get_max_attempts_with_cache", return_value=5),
+        patch("google.cloud.tasks_v2.CloudTasksClient", autospec=True) as client_cls,
+        patch("django_tasks_google.backends.task_enqueued.send_robust"),
+        django_capture_on_commit_callbacks(execute=True),
+    ):
+        client = client_cls.return_value
+        client.create_task.return_value = fake_cloud_task
+
+        backend.enqueue_gcp(execution.pk)
+
+    parent = client.create_task.call_args.kwargs["parent"]
+    assert parent == "projects/test-project/locations/us-central1/queues/default"
+
+
+def test_cloud_tasks_get_max_attempts_resolves_queue_alias():
+    backend = _cloud_tasks_backend_with_aliases(
+        {"default": "my-service-queue-name-prod"}
+    )
+    fake_queue = type(
+        "Queue", (), {"retry_config": type("Retry", (), {"max_attempts": 4})()}
+    )()
+
+    with patch("google.cloud.tasks_v2.CloudTasksClient", autospec=True) as client_cls:
+        client_cls.return_value.get_queue.return_value = fake_queue
+        backend.get_max_attempts("default")
+
+    name = client_cls.return_value.get_queue.call_args.kwargs["name"]
+    assert name == (
+        "projects/test-project/locations/us-central1/queues/my-service-queue-name-prod"
+    )
+
+
+@pytest.mark.django_db
+def test_cloud_run_enqueue_gcp_resolves_queue_alias(
+    django_capture_on_commit_callbacks,
+):
+    backend = _cloud_run_backend_with_aliases({"default": "my-service-job-prod"})
+    execution = TaskExecution.objects.create(
+        module_path="tests.fake_tasks.sample_task",
+        backend_alias="default",
+        queue_name="default",
+        args=[],
+        kwargs={},
+    )
+
+    fake_operation = type(
+        "Operation",
+        (),
+        {
+            "metadata": type(
+                "Metadata", (), {"name": "projects/p/locations/l/executions/e1"}
+            )()
+        },
+    )()
+
+    with (
+        patch.object(backend, "get_max_attempts_with_cache", return_value=3),
+        patch("google.cloud.run_v2.JobsClient", autospec=True) as jobs_client_cls,
+        patch("django_tasks_google.backends.task_enqueued.send_robust"),
+        django_capture_on_commit_callbacks(execute=True),
+    ):
+        jobs_client = jobs_client_cls.return_value
+        jobs_client.run_job.return_value = fake_operation
+
+        backend.enqueue_gcp(execution.pk)
+
+    request = jobs_client.run_job.call_args.kwargs["request"]
+    assert request.name == "projects/p1/locations/us-central1/jobs/my-service-job-prod"
+    execution.refresh_from_db()
+    assert execution.queue_name == "default"
+
+
+def test_cloud_run_get_max_attempts_resolves_queue_alias():
+    backend = _cloud_run_backend_with_aliases({"default": "my-service-job-prod"})
+    fake_job = type(
+        "Job",
+        (),
+        {
+            "template": type(
+                "T", (), {"template": type("TT", (), {"max_retries": 2})()}
+            )()
+        },
+    )()
+
+    with patch("google.cloud.run_v2.JobsClient", autospec=True) as jobs_client_cls:
+        jobs_client_cls.return_value.get_job.return_value = fake_job
+        backend.get_max_attempts("default")
+
+    name = jobs_client_cls.return_value.get_job.call_args.kwargs["name"]
+    assert name == "projects/p1/locations/us-central1/jobs/my-service-job-prod"

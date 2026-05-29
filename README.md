@@ -76,22 +76,27 @@ TASKS = {
             "location": "us-central1",
             "base_url": "https://your-app.run.app/tasks/",
             "oidc_service_account": "task-invoker@your-project-id.iam.gserviceaccount.com",
+            "queue_aliases": {"default": "my-service-queue-name-prod"},
         },
     },
     "jobs": {
         "BACKEND": "django_tasks_google.backends.CloudRunJobsBackend",
-        "QUEUES": ["my-job"],
+        "QUEUES": ["default"],
         "OPTIONS": {
             "project_id": "your-project-id",
             "location": "us-central1",
             "base_url": "https://your-app.run.app/tasks/",
             "oidc_service_account": "task-invoker@your-project-id.iam.gserviceaccount.com",
+            "queue_aliases": {"default": "my-service-job-name-prod"},
         },
     },
 }
 ```
 
-> `QUEUES` maps to Cloud Tasks queues or Cloud Run Job names.
+> `QUEUES` lists the logical queue names used in `@task` and `.using()`. By default these are the literal Cloud Tasks
+> queue / Cloud Run Job names; the optional `queue_aliases` option maps each to a different (often verbose or
+> environment-specific) real resource name, so task code can keep using short, stable names. Unmapped names are used
+> as-is.
 
 #### Local development
 
@@ -296,11 +301,12 @@ cancel_task(result.id, force=True)
 
 ### Request & routing
 
-| Option          | Default                 | Description                                                                                                                                                                                                                                      |
-|-----------------|-------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `oidc_audience` | Derived from `base_url` | Audience value expected in the OIDC token sent by GCP. Defaults to the **origin of `base_url` (scheme + host, no path)**, matching Cloud Run’s default auth behavior. Change only if your service validates tokens against a different audience. |
-| `execute_url`   | `<base_url>/execute/`   | Endpoint that receives task execution requests. Change if you mount task URLs at a different path.                                                                                                                                               |
-| `schedule_url`  | `<base_url>/schedule/`  | Endpoint used by Cloud Scheduler to trigger tasks. Change if your scheduling endpoint lives elsewhere.                                                                                                                                           |
+| Option          | Default                 | Description                                                                                                                                                                                                                                                            |
+|-----------------|-------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `oidc_audience` | Derived from `base_url` | Audience value expected in the OIDC token sent by GCP. Defaults to the **origin of `base_url` (scheme + host, no path)**, matching Cloud Run’s default auth behavior. Change only if your service validates tokens against a different audience.                       |
+| `execute_url`   | `<base_url>/execute/`   | Endpoint that receives task execution requests. Change if you mount task URLs at a different path.                                                                                                                                                                     |
+| `schedule_url`  | `<base_url>/schedule/`  | Endpoint used by Cloud Scheduler to trigger tasks. Change if your scheduling endpoint lives elsewhere.                                                                                                                                                                 |
+| `queue_aliases` | `{}`                    | Maps a logical queue/job name (used in `@task` and `QUEUES`) to the real Cloud Tasks queue / Cloud Run Job name, e.g. `{"default": "my-service-queue-name-prod"}`. Lets task code use stable short names across environments. Names not in the mapping are used as-is. |
 
 > Example:
 > `base_url = "https://my-app.run.app/tasks/"`
