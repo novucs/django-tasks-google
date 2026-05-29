@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import pytest
 from django.tasks import task_backends
 from opentelemetry import trace
@@ -130,6 +132,72 @@ def test_failing_task_marks_consumer_span_error(spans):
     consumer = _span_of_kind(spans, SpanKind.CONSUMER)
     assert consumer.status.status_code == StatusCode.ERROR
     assert consumer.attributes["error.type"].endswith("ValueError")
+    assert any(event.name == "exception" for event in consumer.events)
+
+
+@pytest.mark.django_db
+def test_retryable_failure_still_marks_consumer_span_error(spans):
+    from tests.fake_tasks import always_fails
+
+    result = always_fails.enqueue()
+    # max_attempts=2 so attempt 1 is retryable (task goes back to READY, not FAILED).
+    TaskExecution.objects.filter(pk=result.id).update(max_attempts=2)
+
+    should_retry = execute_task(result.id, attempt=1, backend=task_backends["process"])
+
+    assert should_retry is True
+    consumer = _span_of_kind(spans, SpanKind.CONSUMER)
+    # The attempt raised, so its span is errored even though a retry will follow.
+    assert consumer.status.status_code == StatusCode.ERROR
+    assert any(event.name == "exception" for event in consumer.events)
+
+
+@pytest.mark.django_db
+def test_execute_view_links_consumer_span_to_request_header(client, spans):
+    execution = _make_process_execution()
+    carrier, upstream_ctx = _carrier_for_new_span("upstream")
+
+    with patch(
+        "django_tasks_google.auth.handle_oidc_auth", return_value=(True, None, None)
+    ):
+        response = client.post(
+            "/execute/",
+            data={"execution_id": str(execution.pk), "backend": "process"},
+            HTTP_X_CLOUDTASKS_TASKRETRYCOUNT="0",
+            HTTP_TRACEPARENT=carrier["traceparent"],
+        )
+
+    assert response.status_code == 204
+    consumer = _span_of_kind(spans, SpanKind.CONSUMER)
+    assert consumer.context.trace_id == upstream_ctx.trace_id
+    assert consumer.parent.span_id == upstream_ctx.span_id
+
+
+@pytest.mark.django_db
+def test_schedule_view_emits_producer_span(client, spans):
+    from django_tasks_google.models import ScheduledTask
+
+    task = ScheduledTask.objects.create(
+        name="task-trace",
+        schedule="0 * * * *",
+        module_path="tests.fake_tasks.sample_task",
+        backend_alias="default",
+        queue_name="default",
+    )
+
+    with patch(
+        "django_tasks_google.auth.handle_oidc_auth", return_value=(True, None, None)
+    ):
+        response = client.post(
+            "/schedule/",
+            data={"task_id": str(task.pk), "backend": "default"},
+            HTTP_X_CLOUDSCHEDULER_JOBNAME="projects/x/locations/l/jobs/j",
+            HTTP_X_CLOUDSCHEDULER_SCHEDULETIME="2026-03-27T12:00:00Z",
+        )
+
+    assert response.status_code == 204
+    producer = _span_of_kind(spans, SpanKind.PRODUCER)
+    assert producer.name == "send default/default"
 
 
 @pytest.mark.django_db

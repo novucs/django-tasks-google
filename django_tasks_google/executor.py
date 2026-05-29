@@ -81,6 +81,7 @@ class TaskExecutor:
                 return None
             except Exception as err:
                 exception = err
+                tracing.record_exception(err)
             task_result = self.save_task_result(
                 return_value=return_value,
                 exception=exception,
@@ -239,11 +240,9 @@ def execute_task(execution_id, attempt, *, backend=None, trace_carrier=None):
         execution.max_attempts,
     )
     messaging_system = execution.backend.otel_messaging_system
-    with tracing.consumer_span(execution, messaging_system, trace_carrier) as span:
+    with tracing.consumer_span(execution, messaging_system, trace_carrier):
         executor = TaskExecutor(attempt, execution)
         task_result = executor.execute()
-        if task_result and task_result.status == TaskResultStatus.FAILED:
-            tracing.mark_failed(span, task_result)
     logger.info(
         "Task id=%s path=%s finished attempt %s/%s",
         execution_id,

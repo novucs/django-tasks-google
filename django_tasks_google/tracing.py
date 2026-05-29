@@ -47,7 +47,7 @@ def _get_tracer():
 
 @contextlib.contextmanager
 def producer_span(task, messaging_system):
-    """Start a PRODUCER span; yield a carrier to inject into the transport.
+    """Start a PRODUCER span and yield a carrier with its injected context.
 
     Yields an empty carrier and starts no span when tracing is disabled.
     """
@@ -77,7 +77,7 @@ def producer_span(task, messaging_system):
 def consumer_span(execution, messaging_system, carrier=None):
     """Start a CONSUMER span linked back to the producer.
 
-    Yields the span (so the caller can set its status), or ``None`` when disabled.
+    Yields the span, or ``None`` when disabled.
     """
     if not _enabled():
         yield None
@@ -129,13 +129,17 @@ def carrier_from_env(environ):
     }
 
 
-def mark_failed(span, task_result):
-    """Mark a CONSUMER span as failed from a finished, failed ``TaskResult``."""
-    if span is None:
+def record_exception(exception):
+    """Record an exception on the current span and mark it errored.
+
+    No-op when tracing is disabled or no span is recording.
+    """
+    if not _enabled():
         return
+    span = trace.get_current_span()
+    if not span.is_recording():
+        return
+    span.record_exception(exception)
+    cls = type(exception)
+    span.set_attribute("error.type", f"{cls.__module__}.{cls.__qualname__}")
     span.set_status(Status(StatusCode.ERROR))
-    errors = getattr(task_result, "errors", None)
-    if errors:
-        error_type = getattr(errors[-1], "exception_class_path", None)
-        if error_type:
-            span.set_attribute("error.type", error_type)
