@@ -95,21 +95,52 @@ TASKS = {
 
 #### Local development
 
-For local development, you can run tasks synchronously without Google Cloud by using Django’s built-in backend:
+`ProcessBackend` runs tasks locally without Google Cloud. Tasks are persisted as `TaskExecution` rows and executed in
+background processes (one per task, mirroring Cloud Run Jobs) by a polling worker (`manage.py run_tasks`), so
+long-running tasks don't block the request that enqueued them. Each backend's `mode` mocks either Cloud Tasks or
+Cloud Run Jobs - they differ in whether deferred `run_after` tasks (Cloud Tasks) and forceful cancellation
+(Cloud Run Jobs) are supported. The worker also polls scheduled (cron) tasks locally in place of Cloud Scheduler.
+
+Install the local extra (pulls in `croniter`, used for cron schedules):
+
+```bash
+pip install 'django-tasks-google[local]'
+```
+
+Mirror your production aliases, swapping each backend for `ProcessBackend` with the matching `mode`:
 
 ```python
 TASKS = {
     "default": {
-        "BACKEND": "django.tasks.backends.ImmediateBackend",
+        "BACKEND": "django_tasks_google.backends.ProcessBackend",
+        "QUEUES": ["default"],
+        "OPTIONS": {"mode": "cloud_tasks"},
     },
     "jobs": {
-        "BACKEND": "django.tasks.backends.ImmediateBackend",
+        "BACKEND": "django_tasks_google.backends.ProcessBackend",
+        "QUEUES": ["my-job"],
+        "OPTIONS": {"mode": "cloud_run_jobs"},
     },
 }
 ```
 
-Tasks will execute immediately in-process when calling `.enqueue()`, making it easy to test and debug without external
-services.
+Run the worker (leave it running alongside `runserver`):
+
+```bash
+python manage.py run_tasks
+```
+
+Useful flags: `--backend <alias>` (repeatable; defaults to every `ProcessBackend` in `TASKS`), `--queue <name>`
+(repeatable), `--max-workers`, `--poll-interval`, `--batch-size`, `--once` (single poll then exit), and `--catch-up`.
+
+Scheduled tasks work locally with no extra setup - `schedule_task(...)` creates the `ScheduledTask` (skipping the Cloud
+Scheduler sync) and the same worker fires it on schedule, using each task's `time_zone`. Cron slots are evaluated with
+`croniter`; matching cron semantics, a task is **not** fired for a slot that elapsed before the worker started unless
+you pass `--catch-up`.
+
+Cancellation works locally too: graceful cancellation is cooperative (as on Google Cloud), and forceful cancellation
+(`cloud_run_jobs` mode) SIGTERMs the task's subprocess - raising `TaskCancelledError` inside the task just like
+Cloud Run Jobs.
 
 ### 3. Mount URLs
 
@@ -217,12 +248,13 @@ cancel_task(result.id)
 > be a short delay before `is_task_cancelled(context)` returns `True`.
 > Passing `is_task_cancelled(context, refresh=True)` will immediately check the database.
 
-### Forceful Cancellation (Cloud Run Jobs only)
+### Forceful Cancellation (Cloud Run Jobs)
 
-Forceful cancellation is only supported with the `CloudRunJobsBackend`.
+Forceful cancellation is supported with the `CloudRunJobsBackend` (and locally with `ProcessBackend` in
+`cloud_run_jobs` mode).
 
-This sends a `SIGTERM` to the container, causing a `TaskCancelledError` to be raised inside the task. Use this to handle
-cleanup:
+This sends a `SIGTERM` to the container (or, locally, to the task's subprocess), causing a `TaskCancelledError` to be
+raised inside the task. Use this to handle cleanup:
 
 ```python
 from django.tasks import task
@@ -280,6 +312,19 @@ cancel_task(result.id, force=True)
 |-----------------------------------|-------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `run_once`                        | `False`                                   | If `True`, the task runs only on the first attempt and will not retry on failure or redelivery. Use for non-idempotent tasks where duplicate execution is unsafe. |
 | `command` *(Cloud Run Jobs only)* | `["python", "manage.py", "execute_task"]` | Command executed inside the Cloud Run Job container. Change if your task runner entrypoint differs.                                                               |
+
+### ProcessBackend (local development)
+
+`ProcessBackend` needs none of the GCP options above. It accepts the common options (`run_once`, heartbeat, storage,
+caching) plus the following. Tasks run via the `run_tasks` polling worker.
+
+| Option                  | Default         | Description                                                                                                                                                |
+|-------------------------|-----------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `mode`                  | `"cloud_tasks"` | `"cloud_tasks"` supports deferred (`run_after`) tasks; `"cloud_run_jobs"` supports forceful cancellation instead. Mocks the chosen backend's capabilities. |
+| `max_attempts`          | `1`             | Total attempts per task before it is marked failed (retries are driven by the worker, not an external queue).                                              |
+| `max_workers`           | `4`             | Maximum number of concurrent task subprocesses.                                                                                                            |
+| `poll_interval_seconds` | `1.0`           | How often the worker polls for ready and scheduled tasks.                                                                                                  |
+| `batch_size`            | `max_workers`   | Maximum number of ready tasks dispatched per poll iteration.                                                                                               |
 
 ### Heartbeat & reliability
 

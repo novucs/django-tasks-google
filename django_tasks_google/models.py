@@ -99,6 +99,7 @@ class TaskExecution(models.Model):
     return_value = models.JSONField(null=True)
 
     cancelled_at = models.DateTimeField(null=True)
+    force_cancel = models.BooleanField(default=False)
     cloud_run_job_execution_name = models.TextField(null=True, unique=True)
     cloud_task_name = models.TextField(null=True, unique=True)
     max_attempts = models.IntegerField(null=True)
@@ -168,8 +169,10 @@ class TaskExecution(models.Model):
         return self.status in (TaskResultStatus.SUCCESSFUL, TaskResultStatus.FAILED)
 
     def cancel(self, force=False):
-        if force and not self.cloud_run_job_execution_name:
-            raise NotImplementedError("Only Cloud Run Jobs may be forcibly cancelled")
+        if force and not self.backend.supports_force_cancel:
+            raise NotImplementedError(
+                "This backend does not support forceful cancellation"
+            )
 
         with transaction.atomic():
             now = timezone.now()
@@ -178,6 +181,8 @@ class TaskExecution(models.Model):
             self.cancelled_at = now
             self.finished_at = now
             self.status = TaskResultStatus.FAILED
+            if force:
+                self.force_cancel = True
             self.save(
                 update_fields=[
                     "lease_worker_id",
@@ -185,26 +190,12 @@ class TaskExecution(models.Model):
                     "cancelled_at",
                     "finished_at",
                     "status",
+                    "force_cancel",
                 ],
             )
 
-        if not force:
-            return
-
-        from google.api_core.exceptions import FailedPrecondition
-        from google.cloud import run_v2
-
-        client = run_v2.ExecutionsClient()
-        try:
-            client.cancel_execution(name=self.cloud_run_job_execution_name)
-        except FailedPrecondition as e:
-            # The execution is already terminal (succeeded/failed)
-            # or already actively cancelling.
-            logger.warning(
-                "Execution %s is not in a cancellable state: %s",
-                self.cloud_run_job_execution_name,
-                e.message,
-            )
+        if force:
+            self.backend.force_cancel(self)
 
     def append_error_entry(self, exception: BaseException):
         exception_type = type(exception)

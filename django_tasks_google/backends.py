@@ -27,6 +27,14 @@ def get_oidc_audience(url):
 
 
 class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
+    # Backends that dispatch work to Google Cloud require GCP configuration
+    # (project_id, location, base_url, oidc_service_account) and sync scheduled
+    # tasks to Cloud Scheduler. Local backends set these False to opt out.
+    requires_gcp_config = True
+    uses_cloud_scheduler = True
+    # Whether cancel_task(..., force=True) is supported by this backend.
+    supports_force_cancel = False
+
     def __init__(self, alias, params):
         super().__init__(alias, params)
         self.project_id = self.options.get("project_id")
@@ -53,28 +61,37 @@ class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
             )
         )
 
-        if not self.project_id:
-            raise ImproperlyConfigured("project_id is required")
-        if not self.location:
-            raise ImproperlyConfigured("location is required")
         if self.heartbeat_interval > self.heartbeat_timeout:
             raise ImproperlyConfigured(
                 "heartbeat_interval_seconds cannot be greater than "
                 "heartbeat_timeout_seconds"
             )
-        if not self.base_url:
-            raise ImproperlyConfigured("base_url is required")
-        if not self.oidc_service_account:
-            raise ImproperlyConfigured("oidc_service_account is required")
 
-        self.base_url = self.base_url.rstrip("/") + "/"
-        self.execute_url = self.options.get("execute_url", self.base_url + "execute/")
-        self.schedule_url = self.options.get(
-            "schedule_url", self.base_url + "schedule/"
-        )
-        self.oidc_audience = self.options.get(
-            "oidc_audience", get_oidc_audience(self.base_url)
-        )
+        if self.requires_gcp_config:
+            if not self.project_id:
+                raise ImproperlyConfigured("project_id is required")
+            if not self.location:
+                raise ImproperlyConfigured("location is required")
+            if not self.base_url:
+                raise ImproperlyConfigured("base_url is required")
+            if not self.oidc_service_account:
+                raise ImproperlyConfigured("oidc_service_account is required")
+
+            self.base_url = self.base_url.rstrip("/") + "/"
+            self.execute_url = self.options.get(
+                "execute_url", self.base_url + "execute/"
+            )
+            self.schedule_url = self.options.get(
+                "schedule_url", self.base_url + "schedule/"
+            )
+            self.oidc_audience = self.options.get(
+                "oidc_audience", get_oidc_audience(self.base_url)
+            )
+        else:
+            self.execute_url = None
+            self.schedule_url = None
+            self.oidc_audience = None
+
         self.max_history_entries = self.options.get("max_history_entries", 100)
         self.cache_alias = self.options.get("cache_alias", "default")
         self.cache_prefix = self.options.get("cache_prefix", "django-tasks-google")
@@ -111,6 +128,12 @@ class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
     def get_max_attempts(self, queue_name):
         pass
 
+    def force_cancel(self, execution):
+        # Backend-specific forceful cancellation. The row has already been marked
+        # cancelled/FAILED by TaskExecution.cancel(); subclasses that support force
+        # cancellation do the work needed to actually interrupt the running task.
+        pass
+
     def get_max_attempts_with_cache(self, queue_name):
         if self.cache_ttl_max_attempts <= 0:
             return self.get_max_attempts(queue_name)
@@ -131,6 +154,7 @@ class CloudRunJobsBackend(DjangoTasksGoogleBackend):
     supports_async_task = True
     supports_get_result = True
     supports_priority = False
+    supports_force_cancel = True
 
     def __init__(self, alias, params):
         super().__init__(alias, params)
@@ -138,6 +162,25 @@ class CloudRunJobsBackend(DjangoTasksGoogleBackend):
             "command",
             ["python", "manage.py", "execute_task"],
         )
+
+    def force_cancel(self, execution):
+        if not execution.cloud_run_job_execution_name:
+            return
+
+        from google.api_core.exceptions import FailedPrecondition
+        from google.cloud import run_v2
+
+        client = run_v2.ExecutionsClient()
+        try:
+            client.cancel_execution(name=execution.cloud_run_job_execution_name)
+        except FailedPrecondition as e:
+            # The execution is already terminal (succeeded/failed)
+            # or already actively cancelling.
+            logger.warning(
+                "Execution %s is not in a cancellable state: %s",
+                execution.cloud_run_job_execution_name,
+                e.message,
+            )
 
     def enqueue_gcp(self, execution_id):
         from google.cloud import run_v2
@@ -274,3 +317,60 @@ class CloudTasksBackend(DjangoTasksGoogleBackend):
         )
         max_attempts = queue.retry_config.max_attempts
         return max_attempts if max_attempts >= 0 else None
+
+
+class ProcessBackend(DjangoTasksGoogleBackend):
+    """Local, GCP-free backend for development and testing.
+
+    Tasks are persisted as ``TaskExecution`` rows and executed in background
+    subprocesses (one per task execution) by the ``run_tasks`` management command
+    (a polling worker). It can be configured to mock either Cloud Tasks or Cloud
+    Run Jobs via the ``mode`` option, which differ in whether deferred
+    (``run_after``) tasks and forceful cancellation are supported.
+    """
+
+    requires_gcp_config = False
+    uses_cloud_scheduler = False
+    supports_async_task = True
+    supports_get_result = True
+    supports_priority = False
+    # supports_defer and supports_force_cancel are set per-instance based on mode.
+
+    def __init__(self, alias, params):
+        super().__init__(alias, params)
+        mode = self.options.get("mode", "cloud_tasks")
+        if mode not in ("cloud_tasks", "cloud_run_jobs"):
+            raise ImproperlyConfigured(
+                "ProcessBackend mode must be 'cloud_tasks' or 'cloud_run_jobs', "
+                f"not {mode!r}"
+            )
+        self.mode = mode
+        # Cloud Tasks supports run_after; Cloud Run Jobs does not.
+        self.supports_defer = mode == "cloud_tasks"
+        # Like Cloud Run Jobs, cloud_run_jobs mode can be forcibly cancelled
+        # (the worker SIGTERMs the task's subprocess).
+        self.supports_force_cancel = mode == "cloud_run_jobs"
+        self.max_attempts = self.options.get("max_attempts", 1)
+        # Worker tuning lives on the backend so multiple aliases can differ.
+        self.poll_interval = self.options.get("poll_interval_seconds", 1.0)
+        self.max_workers = self.options.get("max_workers", 4)
+        self.batch_size = self.options.get("batch_size", self.max_workers)
+
+    def enqueue_gcp(self, execution_id):
+        # No GCP. Persist max_attempts (so try_acquire_lease's attempt cap works)
+        # and fire task_enqueued on commit, matching the Cloud* backends so signal
+        # receivers behave identically. The polling worker runs the task.
+        with transaction.atomic():
+            execution = TaskExecution.objects.select_for_update().get(pk=execution_id)
+            execution.max_attempts = self.max_attempts
+            execution.save(update_fields=["max_attempts"])
+            transaction.on_commit(
+                partial(
+                    task_enqueued.send_robust,
+                    type(self),
+                    task_result=execution.task_result,
+                )
+            )
+
+    def get_max_attempts(self, queue_name):
+        return self.max_attempts

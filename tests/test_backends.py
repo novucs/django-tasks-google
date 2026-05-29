@@ -4,11 +4,13 @@ from unittest.mock import patch
 import pytest
 from django.core.exceptions import ImproperlyConfigured
 from django.tasks import Task, task_backends
+from django.tasks.exceptions import InvalidTask
 from django.utils import timezone
 
 from django_tasks_google.backends import (
     CloudRunJobsBackend,
     CloudTasksBackend,
+    ProcessBackend,
     get_oidc_audience,
 )
 from django_tasks_google.models import TaskExecution
@@ -316,3 +318,196 @@ def test_cloud_tasks_enqueue_gcp_sets_schedule_time_for_run_after():
     task_proto = client.create_task.call_args.kwargs["task"]
     schedule_dt = task_proto.schedule_time
     assert int(schedule_dt.timestamp()) == int(run_after.timestamp())
+
+
+def test_process_backend_does_not_require_gcp_config():
+    backend = ProcessBackend("x", {"OPTIONS": {}})
+    assert backend.project_id is None
+    assert backend.execute_url is None
+    assert backend.schedule_url is None
+    assert backend.oidc_audience is None
+    assert backend.requires_gcp_config is False
+    assert backend.uses_cloud_scheduler is False
+
+
+def test_process_backend_mode_cloud_tasks_supports_defer():
+    backend = task_backends["process"]
+    assert backend.supports_defer is True
+
+    # Constructing a deferred task against the process backend validates fine.
+    task = Task(
+        priority=0,
+        func=sample_task.func,
+        backend="process",
+        queue_name="default",
+        run_after=timezone.now() + timedelta(minutes=5),
+        takes_context=False,
+    )
+    backend.validate_task(task)
+
+
+def test_process_backend_mode_cloud_run_jobs_rejects_defer():
+    backend = ProcessBackend("x", {"OPTIONS": {"mode": "cloud_run_jobs"}})
+    assert backend.supports_defer is False
+
+    # Built against the (defer-capable) process alias, then validated against a
+    # cloud_run_jobs-mode backend, which must reject the run_after.
+    task = Task(
+        priority=0,
+        func=sample_task.func,
+        backend="process",
+        queue_name="default",
+        run_after=timezone.now() + timedelta(minutes=5),
+        takes_context=False,
+    )
+    with pytest.raises(InvalidTask):
+        backend.validate_task(task)
+
+
+def test_process_backend_mode_sets_force_cancel_capability():
+    cloud_tasks = ProcessBackend("x", {"OPTIONS": {"mode": "cloud_tasks"}})
+    cloud_run = ProcessBackend("x", {"OPTIONS": {"mode": "cloud_run_jobs"}})
+    assert cloud_tasks.supports_force_cancel is False
+    assert cloud_run.supports_force_cancel is True
+
+
+def test_process_backend_invalid_mode_raises():
+    with pytest.raises(ImproperlyConfigured, match="mode must be"):
+        ProcessBackend("x", {"OPTIONS": {"mode": "nonsense"}})
+
+
+def test_process_backend_get_max_attempts_returns_configured():
+    backend = ProcessBackend("x", {"OPTIONS": {"max_attempts": 7}})
+    assert backend.get_max_attempts("default") == 7
+    assert backend.get_max_attempts_with_cache("default") == 7
+
+
+def test_force_cancel_capability_flags():
+    assert (
+        CloudRunJobsBackend(
+            "jobs",
+            {
+                "OPTIONS": {
+                    "project_id": "p1",
+                    "location": "us-central1",
+                    "base_url": "https://example.com/tasks",
+                    "oidc_service_account": "svc@example.com",
+                }
+            },
+        ).supports_force_cancel
+        is True
+    )
+    assert task_backends["default"].supports_force_cancel is False  # CloudTasks
+
+
+@pytest.mark.django_db
+def test_process_backend_enqueue_sets_max_attempts_and_fires_signal(
+    django_capture_on_commit_callbacks,
+):
+    backend = task_backends["process"]
+    task = Task(
+        priority=0,
+        func=sample_task.func,
+        backend="process",
+        queue_name="default",
+        run_after=None,
+        takes_context=False,
+    )
+
+    with (
+        patch("django_tasks_google.backends.task_enqueued.send_robust") as send_mock,
+        django_capture_on_commit_callbacks(execute=True),
+    ):
+        task_result = backend.enqueue(task, args=[1], kwargs={})
+
+    execution = TaskExecution.objects.get(pk=task_result.id)
+    assert execution.status == "READY"
+    assert execution.max_attempts == 3
+    send_mock.assert_called_once()
+
+
+@pytest.mark.django_db
+def test_cancel_force_on_process_cloud_run_jobs_mode_marks_force_cancel():
+    execution = TaskExecution.objects.create(
+        module_path="tests.fake_tasks.process_task",
+        backend_alias="process_jobs",  # cloud_run_jobs mode
+        queue_name="default",
+        args=[],
+        kwargs={},
+        status="RUNNING",
+    )
+
+    execution.cancel(force=True)
+
+    execution.refresh_from_db()
+    assert execution.force_cancel is True
+    assert execution.cancelled_at is not None
+    assert execution.status == "FAILED"
+
+
+@pytest.mark.django_db
+def test_cancel_force_on_process_cloud_tasks_mode_raises():
+    execution = TaskExecution.objects.create(
+        module_path="tests.fake_tasks.process_task",
+        backend_alias="process",  # settings default = cloud_tasks mode
+        queue_name="default",
+        args=[],
+        kwargs={},
+    )
+    with pytest.raises(NotImplementedError):
+        execution.cancel(force=True)
+
+
+@pytest.mark.django_db
+def test_cancel_force_on_cloud_tasks_backend_raises():
+    execution = TaskExecution.objects.create(
+        module_path="tests.fake_tasks.sample_task",
+        backend_alias="default",
+        queue_name="default",
+        args=[],
+        kwargs={},
+    )
+    with pytest.raises(NotImplementedError):
+        execution.cancel(force=True)
+
+
+def test_cloud_run_jobs_force_cancel_calls_api():
+    backend = CloudRunJobsBackend(
+        "jobs",
+        {
+            "OPTIONS": {
+                "project_id": "p1",
+                "location": "us-central1",
+                "base_url": "https://example.com/tasks",
+                "oidc_service_account": "svc@example.com",
+            }
+        },
+    )
+    execution = TaskExecution(cloud_run_job_execution_name="projects/p/executions/e1")
+
+    with patch("google.cloud.run_v2.ExecutionsClient", autospec=True) as client_cls:
+        backend.force_cancel(execution)
+
+    client_cls.return_value.cancel_execution.assert_called_once_with(
+        name="projects/p/executions/e1"
+    )
+
+
+def test_cloud_run_jobs_force_cancel_noop_without_execution_name():
+    backend = CloudRunJobsBackend(
+        "jobs",
+        {
+            "OPTIONS": {
+                "project_id": "p1",
+                "location": "us-central1",
+                "base_url": "https://example.com/tasks",
+                "oidc_service_account": "svc@example.com",
+            }
+        },
+    )
+    execution = TaskExecution(cloud_run_job_execution_name=None)
+
+    with patch("google.cloud.run_v2.ExecutionsClient", autospec=True) as client_cls:
+        backend.force_cancel(execution)
+
+    client_cls.assert_not_called()

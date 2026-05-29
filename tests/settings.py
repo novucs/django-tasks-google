@@ -55,5 +55,23 @@ TASKS = {
             "heartbeat_timeout_seconds": 3,
             "heartbeat_join_timeout_seconds": 1,
         },
-    }
+    },
+    "process": {
+        "BACKEND": "django_tasks_google.backends.ProcessBackend",
+        "QUEUES": ["default"],
+        "OPTIONS": {
+            "mode": "cloud_tasks",
+            "max_attempts": 3,
+            "heartbeat_enabled": False,
+        },
+    },
+    "process_jobs": {
+        "BACKEND": "django_tasks_google.backends.ProcessBackend",
+        "QUEUES": ["default"],
+        "OPTIONS": {
+            "mode": "cloud_run_jobs",
+            "max_attempts": 3,
+            "heartbeat_enabled": False,
+        },
+    },
 }

@@ -41,10 +41,15 @@ def schedule_task(
 
 @transaction.atomic
 def sync_scheduled_task(scheduled_task_id):
+    task = ScheduledTask.objects.select_for_update().get(pk=scheduled_task_id)
+    if not getattr(task.backend, "uses_cloud_scheduler", True):
+        # Local backends (e.g. ProcessBackend) have no Cloud Scheduler to sync
+        # to; the run_tasks worker polls the schedule directly.
+        return
+
     from google.api_core.exceptions import NotFound
     from google.cloud import scheduler_v1
 
-    task = ScheduledTask.objects.select_for_update().get(pk=scheduled_task_id)
     client = scheduler_v1.CloudSchedulerClient()
     backend = task.backend
     parent = f"projects/{backend.project_id}/locations/{backend.location}"
@@ -95,9 +100,11 @@ def sync_scheduled_task(scheduled_task_id):
 def delete_scheduled_task(scheduled_task_id):
     with transaction.atomic():
         task = ScheduledTask.objects.select_for_update().get(pk=scheduled_task_id)
+        uses_cloud_scheduler = getattr(task.backend, "uses_cloud_scheduler", True)
         job_name = task.cloud_scheduler_job_name
         task.delete()
-    delete_cloud_scheduler_job_if_exists(job_name)
+    if uses_cloud_scheduler:
+        delete_cloud_scheduler_job_if_exists(job_name)
 
 
 def delete_cloud_scheduler_job_if_exists(job_name: str | None = None):
