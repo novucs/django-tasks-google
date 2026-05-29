@@ -165,12 +165,12 @@ urlpatterns = [
 from django.tasks import task
 
 
-@task(queue_name="default")  # Cloud Tasks queue
+@task(queue_name="default")  # Cloud Tasks queue, "default" is the default queue_name
 def send_notification(user_id: int):
     return {"user_id": user_id, "status": "sent"}
 
 
-@task(backend="jobs", queue_name="my-job")  # Cloud Run Job
+@task(backend="jobs")  # Cloud Run Job
 def recompute_analytics():
     return {"ok": True}
 ```
@@ -234,7 +234,7 @@ from django.tasks import task, TaskContext
 from django_tasks_google.base import is_task_cancelled
 
 
-@task(queue_name="my-queue", takes_context=True)
+@task(takes_context=True)
 def batch_process(context: TaskContext):
     while not is_task_cancelled(context):
         ...  # Perform work
@@ -266,7 +266,7 @@ from django.tasks import task
 from django_tasks_google.base import TaskCancelledError
 
 
-@task(backend="jobs", queue_name="my-job")
+@task(backend="jobs")
 def batch_process():
     try:
         ...  # Perform work
