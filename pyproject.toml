@@ -15,6 +15,12 @@ dependencies = [
 license = "MIT"
 license-files = ["LICENSE"]
 
+[project.urls]
+Homepage = "https://github.com/novucs/django-tasks-google"
+Repository = "https://github.com/novucs/django-tasks-google"
+Documentation = "https://github.com/novucs/django-tasks-google#documentation"
+Issues = "https://github.com/novucs/django-tasks-google/issues"
+
 [project.optional-dependencies]
 local = [
     "croniter>=2.0.0",
