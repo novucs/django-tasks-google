@@ -32,6 +32,9 @@ cancel_task(result.id)
 > returns `True`. Passing `is_task_cancelled(context, refresh=True)` will immediately check
 > the database.
 
+You can also cancel executions in bulk from the Django admin: select them in the
+`TaskExecution` list and run the "Cancel selected executions" action.
+
 ## Forceful cancellation (Cloud Run Jobs)
 
 Forceful cancellation is supported with the `CloudRunJobsBackend` (and locally with

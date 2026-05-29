@@ -1,9 +1,10 @@
 import logging
 
 from django.contrib import admin, messages
+from django.utils.html import format_html_join
 
 from django_tasks_google.forms import ScheduledTaskAdminForm
-from django_tasks_google.models import ScheduledTask
+from django_tasks_google.models import ScheduledTask, TaskExecution
 from django_tasks_google.scheduler import delete_cloud_scheduler_job_if_exists
 
 logger = logging.getLogger("django_tasks_google")
@@ -98,4 +99,117 @@ class ScheduledTaskAdmin(admin.ModelAdmin):
                 request,
                 f"Cloud Scheduler deletion failed for {task.name}: {err}",
                 messages.WARNING,
+            )
+
+
+@admin.register(TaskExecution)
+class TaskExecutionAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "status",
+        "module_path",
+        "backend_alias",
+        "queue_name",
+        "enqueued_at",
+        "started_at",
+        "finished_at",
+    )
+    list_filter = ("status", "backend_alias", "queue_name")
+    search_fields = ("module_path", "cloud_task_name", "cloud_run_job_execution_name")
+    date_hierarchy = "enqueued_at"
+    ordering = ("-enqueued_at",)
+    actions = ["cancel_executions"]
+    fieldsets = (
+        (
+            "Task",
+            {
+                "fields": (
+                    "module_path",
+                    "priority",
+                    "backend_alias",
+                    "queue_name",
+                    "takes_context",
+                    "args",
+                    "kwargs",
+                )
+            },
+        ),
+        (
+            "State",
+            {
+                "fields": (
+                    "status",
+                    "enqueued_at",
+                    "started_at",
+                    "finished_at",
+                    "last_attempted_at",
+                    "cancelled_at",
+                    "force_cancel",
+                    "max_attempts",
+                )
+            },
+        ),
+        ("Result", {"fields": ("return_value", "formatted_errors")}),
+        (
+            "Workers",
+            {"fields": ("worker_ids", "lease_worker_id", "lease_expires_at")},
+        ),
+        (
+            "Google Cloud",
+            {"fields": ("cloud_task_name", "cloud_run_job_execution_name")},
+        ),
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def get_readonly_fields(self, request, obj=None):
+        return tuple(f.name for f in self.model._meta.fields) + ("formatted_errors",)
+
+    @admin.display(description="Errors")
+    def formatted_errors(self, obj):
+        if not obj.errors:
+            return "No errors"
+        return format_html_join(
+            "",
+            "<p><strong>{}</strong><pre>{}</pre></p>",
+            (
+                (error.get("exception_class_path", ""), error.get("traceback", ""))
+                for error in obj.errors
+            ),
+        )
+
+    @admin.action(description="Cancel selected executions")
+    def cancel_executions(self, request, queryset):
+        cancelled = skipped = 0
+        failed = []
+        for execution in queryset:
+            if execution.is_finished:
+                skipped += 1
+                continue
+            try:
+                execution.cancel()
+                cancelled += 1
+            except Exception:
+                logger.exception(
+                    "Failed cancelling task execution id=%s path=%s",
+                    execution.pk,
+                    execution.module_path,
+                )
+                failed.append(execution.pk)
+
+        if cancelled:
+            self.message_user(
+                request, f"Cancelled {cancelled} execution(s)", messages.SUCCESS
+            )
+        if skipped:
+            self.message_user(
+                request,
+                f"Skipped {skipped} already-finished execution(s)",
+                messages.WARNING,
+            )
+        if failed:
+            ids = ", ".join(str(pk) for pk in failed)
+            self.message_user(
+                request, f"Failed to cancel execution(s): {ids}", messages.ERROR
             )

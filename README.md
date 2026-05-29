@@ -166,8 +166,10 @@ for every option.
 - `TaskExecution` - execution metadata, status, results, and errors
 - `ScheduledTask` - cron definitions synced with Cloud Scheduler
 
-Read execution state through the task result API (`result.refresh()`, as shown above). The
-Django admin currently exposes `ScheduledTask` only, not individual executions.
+Both models show up in the Django admin. Edit `ScheduledTask` to manage cron schedules.
+Browse `TaskExecution` to see what ran: filter by status, read the arguments and results,
+view tracebacks for failures, and cancel running tasks. To check a task's state in code,
+use `result.refresh()` (shown above).
 
 ## Development
 
