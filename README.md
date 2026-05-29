@@ -7,7 +7,7 @@ without managing workers or leaving Django.
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://pypi.org/project/django-tasks-google/)
 [![Django](https://img.shields.io/badge/django-6.0%2B-092e20.svg)](https://docs.djangoproject.com/en/6.0/topics/tasks/)
 [![CI](https://github.com/novucs/django-tasks-google/actions/workflows/ci.yml/badge.svg)](https://github.com/novucs/django-tasks-google/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/novucs/django-tasks-google/blob/main/LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 Built on Django 6.0's Task Framework (`django.tasks`).
 
@@ -36,10 +36,10 @@ pip install django-tasks-google
 ## Quickstart
 
 The fastest way to try django-tasks-google is locally, with no Google Cloud setup, using
-`ProcessBackend` - see [Local development](https://github.com/novucs/django-tasks-google/blob/main/docs/local-development.md).
+`ProcessBackend` - see [Local development](docs/local-development.md).
 The steps below run it on Google Cloud, which also means deploying your app and creating a
 queue and IAM; do those first, following
-[Deploying to Google Cloud](https://github.com/novucs/django-tasks-google/blob/main/docs/deployment.md).
+[Deploying to Google Cloud](docs/deployment.md).
 
 **Prerequisites:** a Google Cloud project with Cloud Tasks / Cloud Run / Cloud Scheduler
 enabled, and a service account with the Cloud Run Invoker (`roles/run.invoker`) role.
@@ -147,19 +147,19 @@ them (the Cloud Tasks queue's max attempts or the Cloud Run Job's max retries) r
 configured here. The web service and the jobs share one database (supporting row-level
 locking) and coordinate through it.
 
-See [Deploying to Google Cloud](https://github.com/novucs/django-tasks-google/blob/main/docs/deployment.md)
+See [Deploying to Google Cloud](docs/deployment.md)
 to create these resources, and
-[Configuration](https://github.com/novucs/django-tasks-google/blob/main/docs/configuration.md)
+[Configuration](docs/configuration.md)
 for every option.
 
 ## Documentation
 
-- [Deploying to Google Cloud](https://github.com/novucs/django-tasks-google/blob/main/docs/deployment.md) - create the queue, job, and IAM your backends need
-- [Configuration](https://github.com/novucs/django-tasks-google/blob/main/docs/configuration.md) - every backend option, defaults, and reliability settings
-- [Local development](https://github.com/novucs/django-tasks-google/blob/main/docs/local-development.md) - run tasks on your machine with `ProcessBackend`
-- [Scheduling (cron)](https://github.com/novucs/django-tasks-google/blob/main/docs/scheduling.md) - recurring tasks via Cloud Scheduler
-- [Cancelling tasks](https://github.com/novucs/django-tasks-google/blob/main/docs/cancellation.md) - graceful and forceful cancellation
-- [Observability](https://github.com/novucs/django-tasks-google/blob/main/docs/observability.md) - OpenTelemetry tracing
+- [Deploying to Google Cloud](docs/deployment.md) - create the queue, job, and IAM your backends need
+- [Configuration](docs/configuration.md) - every backend option, defaults, and reliability settings
+- [Local development](docs/local-development.md) - run tasks on your machine with `ProcessBackend`
+- [Scheduling (cron)](docs/scheduling.md) - recurring tasks via Cloud Scheduler
+- [Cancelling tasks](docs/cancellation.md) - graceful and forceful cancellation
+- [Observability](docs/observability.md) - OpenTelemetry tracing
 
 ## Data model
 

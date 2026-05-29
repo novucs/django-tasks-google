@@ -27,6 +27,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Pin README doc links to the release tag
+        run: |
+          sed -i \
+            -e "s|](docs/|](https://github.com/novucs/django-tasks-google/blob/${GITHUB_REF_NAME}/docs/|g" \
+            -e "s|](LICENSE)|](https://github.com/novucs/django-tasks-google/blob/${GITHUB_REF_NAME}/LICENSE)|g" \
+            README.md
       - name: Build
         run: uv build
       - name: Publish
