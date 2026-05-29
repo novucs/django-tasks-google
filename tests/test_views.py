@@ -38,7 +38,7 @@ def test_execute_task_view_returns_500_when_retry_requested(client):
             HTTP_X_CLOUDTASKS_TASKRETRYCOUNT="0",
         )
     assert response.status_code == 500
-    execute_mock.assert_called_once_with("1", 1, backend=ANY)
+    execute_mock.assert_called_once_with("1", 1, backend=ANY, trace_carrier=ANY)
 
 
 @pytest.mark.django_db

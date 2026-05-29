@@ -11,6 +11,7 @@ from django.tasks.base import TaskResultStatus
 from django.tasks.signals import task_finished, task_started
 from django.utils import timezone
 
+from django_tasks_google import tracing
 from django_tasks_google.base import (
     PermanentTaskError,
     TaskCancelledError,
@@ -219,7 +220,7 @@ class TaskExecutor:
             connection.close()
 
 
-def execute_task(execution_id, attempt, *, backend=None):
+def execute_task(execution_id, attempt, *, backend=None, trace_carrier=None):
     execution = try_acquire_lease(execution_id, attempt, backend=backend)
     if not execution:
         return False
@@ -237,8 +238,12 @@ def execute_task(execution_id, attempt, *, backend=None):
         attempt,
         execution.max_attempts,
     )
-    executor = TaskExecutor(attempt, execution)
-    task_result = executor.execute()
+    messaging_system = execution.backend.otel_messaging_system
+    with tracing.consumer_span(execution, messaging_system, trace_carrier) as span:
+        executor = TaskExecutor(attempt, execution)
+        task_result = executor.execute()
+        if task_result and task_result.status == TaskResultStatus.FAILED:
+            tracing.mark_failed(span, task_result)
     logger.info(
         "Task id=%s path=%s finished attempt %s/%s",
         execution_id,

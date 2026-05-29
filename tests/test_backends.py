@@ -81,7 +81,8 @@ def test_enqueue_creates_task_execution_and_calls_enqueue_gcp(
         task_result = backend.enqueue(task, args=[1, "a"], kwargs={"k": "v"})
 
     execution = TaskExecution.objects.get(pk=task_result.id)
-    enqueue_gcp_mock.assert_called_once_with(execution.pk)
+    # The carrier is empty here (no active span in the test), but is still threaded.
+    enqueue_gcp_mock.assert_called_once_with(execution.pk, {})
     assert execution.priority == 0
     assert execution.backend_alias == "default"
     assert execution.queue_name == "default"
@@ -290,6 +291,83 @@ def test_cloud_tasks_enqueue_gcp_builds_expected_http_request(
     )
     assert task_proto.http_request.oidc_token.audience == "https://example.com"
     send_mock.assert_called_once()
+
+
+@pytest.mark.django_db
+def test_cloud_tasks_enqueue_gcp_injects_trace_context_into_headers(
+    django_capture_on_commit_callbacks,
+):
+    backend = task_backends["default"]
+    execution = TaskExecution.objects.create(
+        module_path="tests.fake_tasks.sample_task",
+        backend_alias="default",
+        queue_name="default",
+        args=[],
+        kwargs={},
+    )
+    fake_cloud_task = type("CloudTask", (), {"name": "projects/p/tasks/t1"})()
+
+    with (
+        patch.object(backend, "get_max_attempts_with_cache", return_value=5),
+        patch("google.cloud.tasks_v2.CloudTasksClient", autospec=True) as client_cls,
+        patch("django_tasks_google.backends.task_enqueued.send_robust"),
+        django_capture_on_commit_callbacks(execute=True),
+    ):
+        client = client_cls.return_value
+        client.create_task.return_value = fake_cloud_task
+
+        backend.enqueue_gcp(execution.pk, {"traceparent": "00-traceid-spanid-01"})
+
+    task_proto = client.create_task.call_args.kwargs["task"]
+    # W3C context rides as native HTTP headers (alongside the content type).
+    assert task_proto.http_request.headers["traceparent"] == "00-traceid-spanid-01"
+    assert task_proto.http_request.headers["Content-Type"] == (
+        "application/x-www-form-urlencoded"
+    )
+
+
+@pytest.mark.django_db
+def test_cloud_run_enqueue_gcp_injects_trace_context_into_env(
+    django_capture_on_commit_callbacks,
+):
+    backend = CloudRunJobsBackend(
+        "jobs",
+        {
+            "OPTIONS": {
+                "project_id": "p1",
+                "location": "us-central1",
+                "base_url": "https://example.com/tasks",
+                "oidc_service_account": "svc@example.com",
+            }
+        },
+    )
+    execution = TaskExecution.objects.create(
+        module_path="tests.fake_tasks.sample_task",
+        backend_alias="default",
+        queue_name="default",
+        args=[],
+        kwargs={},
+    )
+    fake_operation = type(
+        "Operation",
+        (),
+        {"metadata": type("Metadata", (), {"name": "projects/p/l/executions/e1"})()},
+    )()
+
+    with (
+        patch.object(backend, "get_max_attempts_with_cache", return_value=3),
+        patch("google.cloud.run_v2.JobsClient", autospec=True) as jobs_client_cls,
+        patch("django_tasks_google.backends.task_enqueued.send_robust"),
+        django_capture_on_commit_callbacks(execute=True),
+    ):
+        jobs_client = jobs_client_cls.return_value
+        jobs_client.run_job.return_value = fake_operation
+
+        backend.enqueue_gcp(execution.pk, {"traceparent": "00-traceid-spanid-01"})
+
+    request = jobs_client.run_job.call_args.kwargs["request"]
+    env = {e.name: e.value for e in request.overrides.container_overrides[0].env}
+    assert env["TRACEPARENT"] == "00-traceid-spanid-01"
 
 
 @pytest.mark.django_db

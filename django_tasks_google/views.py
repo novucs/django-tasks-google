@@ -44,7 +44,10 @@ def execute_task_view(request):
         logger.exception("X-CloudTasks-TaskRetryCount must be an integer")
         return HttpResponseBadRequest()
 
-    should_retry = execute_task(execution_id, attempt, backend=backend)
+    # Pass the request headers so the task span can link to the enqueueing trace.
+    should_retry = execute_task(
+        execution_id, attempt, backend=backend, trace_carrier=request.headers
+    )
     if should_retry:
         logger.info("Task %s requested retry", execution_id)
         return HttpResponseServerError()

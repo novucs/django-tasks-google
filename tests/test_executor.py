@@ -96,6 +96,7 @@ def test_execute_task_success_returns_false_and_persists_result(execution):
         heartbeat_join_timeout=timedelta(seconds=1),
         run_once=False,
         max_history_entries=100,
+        otel_messaging_system="gcp_cloud_tasks",
     )
     fake_task = SimpleNamespace(
         call=lambda *args, **kwargs: 42,
@@ -128,6 +129,7 @@ def test_execute_task_failure_returns_true_and_records_error(execution):
         heartbeat_join_timeout=timedelta(seconds=1),
         run_once=False,
         max_history_entries=100,
+        otel_messaging_system="gcp_cloud_tasks",
     )
 
     def _raise_error(*args, **kwargs):

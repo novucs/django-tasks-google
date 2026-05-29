@@ -11,6 +11,7 @@ from django.tasks import TaskResultStatus
 from django.tasks.backends.base import BaseTaskBackend
 from django.tasks.signals import task_enqueued
 
+from django_tasks_google import tracing
 from django_tasks_google.models import TaskExecution
 
 DEFAULT_HEARTBEAT_ENABLED = True
@@ -34,6 +35,8 @@ class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
     uses_cloud_scheduler = True
     # Whether cancel_task(..., force=True) is supported by this backend.
     supports_force_cancel = False
+    # OTel messaging.system value; subclasses set the GCP product.
+    otel_messaging_system = "django_tasks_google"
 
     def __init__(self, alias, params):
         super().__init__(alias, params)
@@ -110,22 +113,27 @@ class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
     def enqueue(self, task, args, kwargs):
         self.validate_task(task)
         with transaction.atomic():
-            execution = TaskExecution.objects.create(
-                priority=task.priority,
-                module_path=task.module_path,
-                backend_alias=self.alias,
-                queue_name=task.queue_name,
-                run_after=task.run_after,
-                takes_context=task.takes_context,
-                args=list(args),
-                kwargs=dict(kwargs),
-            )
-            task_result = execution.task_result
-            transaction.on_commit(partial(self.enqueue_gcp, execution.pk))
+            with tracing.producer_span(
+                task, self.otel_messaging_system
+            ) as trace_context:
+                execution = TaskExecution.objects.create(
+                    priority=task.priority,
+                    module_path=task.module_path,
+                    backend_alias=self.alias,
+                    queue_name=task.queue_name,
+                    run_after=task.run_after,
+                    takes_context=task.takes_context,
+                    args=list(args),
+                    kwargs=dict(kwargs),
+                )
+                task_result = execution.task_result
+                transaction.on_commit(
+                    partial(self.enqueue_gcp, execution.pk, trace_context)
+                )
         return task_result
 
     @abstractmethod
-    def enqueue_gcp(self, execution_id):
+    def enqueue_gcp(self, execution_id, trace_context=None):
         pass
 
     def get_result(self, result_id):
@@ -165,6 +173,7 @@ class CloudRunJobsBackend(DjangoTasksGoogleBackend):
     supports_get_result = True
     supports_priority = False
     supports_force_cancel = True
+    otel_messaging_system = "gcp_cloud_run_jobs"
 
     def __init__(self, alias, params):
         super().__init__(alias, params)
@@ -192,7 +201,7 @@ class CloudRunJobsBackend(DjangoTasksGoogleBackend):
                 e.message,
             )
 
-    def enqueue_gcp(self, execution_id):
+    def enqueue_gcp(self, execution_id, trace_context=None):
         from google.cloud import run_v2
 
         # Intentionally hold a row lock while creating the remote job/task.
@@ -208,12 +217,18 @@ class CloudRunJobsBackend(DjangoTasksGoogleBackend):
                 f"locations/{self.location}/"
                 f"jobs/{resolved_name}"
             )
+            # No HTTP request here, so carry trace context as env vars.
+            env = [
+                run_v2.EnvVar(name=name, value=value)  # type: ignore
+                for name, value in tracing.carrier_to_env(trace_context).items()
+            ]
             request = run_v2.RunJobRequest(
                 name=job_path,  # type: ignore
                 overrides=run_v2.RunJobRequest.Overrides(  # type: ignore
                     container_overrides=[  # type: ignore
                         run_v2.RunJobRequest.Overrides.ContainerOverride(
-                            args=[*self.command, str(execution.pk)]  # type: ignore
+                            args=[*self.command, str(execution.pk)],  # type: ignore
+                            env=env,  # type: ignore
                         )
                     ]
                 ),
@@ -261,8 +276,9 @@ class CloudTasksBackend(DjangoTasksGoogleBackend):
     supports_async_task = True
     supports_get_result = True
     supports_priority = False
+    otel_messaging_system = "gcp_cloud_tasks"
 
-    def enqueue_gcp(self, execution_id):
+    def enqueue_gcp(self, execution_id, trace_context=None):
         from google.cloud import tasks_v2
         from google.protobuf import timestamp_pb2
 
@@ -277,11 +293,16 @@ class CloudTasksBackend(DjangoTasksGoogleBackend):
                 "execution_id": str(execution_id),
                 "backend": execution.backend_alias,
             }
+            # Trace context rides as headers so the target can extract it.
+            headers = {
+                "Content-Type": "application/x-www-form-urlencoded",
+                **(trace_context or {}),
+            }
             cloud_task_definition = tasks_v2.Task(
                 http_request=tasks_v2.HttpRequest(  # type: ignore
                     http_method=tasks_v2.HttpMethod.POST,  # type: ignore
                     url=self.execute_url,
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    headers=headers,
                     body=urlencode(payload).encode(),  # type: ignore
                     oidc_token=tasks_v2.OidcToken(  # type: ignore
                         service_account_email=self.oidc_service_account,
@@ -359,6 +380,10 @@ class ProcessBackend(DjangoTasksGoogleBackend):
                 f"not {mode!r}"
             )
         self.mode = mode
+        # Mirror the emulated product in the messaging.system attribute.
+        self.otel_messaging_system = (
+            "gcp_cloud_tasks" if mode == "cloud_tasks" else "gcp_cloud_run_jobs"
+        )
         # Cloud Tasks supports run_after; Cloud Run Jobs does not.
         self.supports_defer = mode == "cloud_tasks"
         # Like Cloud Run Jobs, cloud_run_jobs mode can be forcibly cancelled
@@ -370,10 +395,11 @@ class ProcessBackend(DjangoTasksGoogleBackend):
         self.max_workers = self.options.get("max_workers", 4)
         self.batch_size = self.options.get("batch_size", self.max_workers)
 
-    def enqueue_gcp(self, execution_id):
-        # No GCP. Persist max_attempts (so try_acquire_lease's attempt cap works)
-        # and fire task_enqueued on commit, matching the Cloud* backends so signal
-        # receivers behave identically. The polling worker runs the task.
+    def enqueue_gcp(self, execution_id, trace_context=None):
+        # No GCP and no transport, so trace_context is dropped (the polling worker
+        # reads the row directly). Persist max_attempts (so try_acquire_lease's
+        # attempt cap works) and fire task_enqueued on commit, matching the Cloud*
+        # backends. The polling worker runs the task.
         with transaction.atomic():
             execution = TaskExecution.objects.select_for_update().get(pk=execution_id)
             execution.max_attempts = self.max_attempts

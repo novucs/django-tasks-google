@@ -23,4 +23,4 @@ def test_execute_task_command_succeeds_when_execution_returns_false():
         ) as run_mock:
             run_mock.return_value = False
             call_command("execute_task", "123")
-    run_mock.assert_called_once_with("123", 1)
+    run_mock.assert_called_once_with("123", 1, trace_carrier={})
