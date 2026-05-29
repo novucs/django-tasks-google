@@ -1,10 +1,8 @@
 import threading
 from dataclasses import dataclass
 
-from django.db import transaction
 from django.tasks import TaskContext as DjangoTaskContext
-from django.tasks import TaskResultStatus
-from django.utils import timezone
+from django.tasks import TaskResult
 
 
 class TaskError(Exception):
@@ -56,32 +54,14 @@ def is_task_cancelled(context: DjangoTaskContext, *, refresh=False):
     return cancelled
 
 
-def cancel_task(task_result_id, *, force=False):
+def cancel_task(task_result_or_id, *, force=False) -> None:
     from django_tasks_google.models import TaskExecution
 
-    with transaction.atomic():
-        execution = TaskExecution.objects.select_for_update().get(pk=task_result_id)
-        if force and not execution.cloud_run_job_execution_name:
-            raise NotImplementedError("Only Cloud Run Jobs may be forcibly cancelled")
+    task_result_id = (
+        task_result_or_id.id
+        if isinstance(task_result_or_id, TaskResult)
+        else task_result_or_id
+    )
 
-        now = timezone.now()
-        execution.lease_worker_id = None
-        execution.lease_expires_at = None
-        execution.cancelled_at = now
-        execution.finished_at = now
-        execution.status = TaskResultStatus.FAILED
-        execution.save(
-            update_fields=[
-                "lease_worker_id",
-                "lease_expires_at",
-                "cancelled_at",
-                "finished_at",
-                "status",
-            ],
-        )
-
-    if force:
-        from google.cloud import run_v2
-
-        client = run_v2.ExecutionsClient()
-        client.cancel_execution(name=execution.cloud_run_job_execution_name)
+    execution = TaskExecution.objects.select_for_update().get(pk=task_result_id)
+    execution.cancel(force=force)
