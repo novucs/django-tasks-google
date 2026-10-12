@@ -100,6 +100,7 @@ automatically. If the Cloud Tasks agent does not exist yet, create it with
 cloudtasks.tasks.create        # enqueue a task
 cloudtasks.queues.get          # read the queue's max attempts
 run.jobs.run                   # start a job execution
+run.jobs.runWithOverrides      # start it with per-execution container overrides (args/env)
 run.jobs.get                   # read the job's max retries
 run.executions.cancel          # forcefully cancel an execution
 cloudscheduler.jobs.create     # create, sync, delete, pause, and resume scheduled tasks
@@ -117,7 +118,7 @@ least-privilege:
 ```bash
 gcloud iam roles create djangoTasksGoogle --project="$PROJECT_ID" \
     --title="django-tasks-google" \
-    --permissions=cloudtasks.tasks.create,cloudtasks.queues.get,run.jobs.run,run.jobs.get,run.executions.cancel,cloudscheduler.jobs.create,cloudscheduler.jobs.update,cloudscheduler.jobs.get,cloudscheduler.jobs.delete,cloudscheduler.jobs.pause,cloudscheduler.jobs.enable
+    --permissions=cloudtasks.tasks.create,cloudtasks.queues.get,run.jobs.run,run.jobs.runWithOverrides,run.jobs.get,run.executions.cancel,cloudscheduler.jobs.create,cloudscheduler.jobs.update,cloudscheduler.jobs.get,cloudscheduler.jobs.delete,cloudscheduler.jobs.pause,cloudscheduler.jobs.enable
 
 gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member="serviceAccount:${RUNTIME_SA}" \
