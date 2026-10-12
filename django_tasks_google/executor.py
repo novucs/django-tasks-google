@@ -217,6 +217,8 @@ class TaskExecutor:
                         )
                         self.lease_lost_event.set()
                         return
+                finally:
+                    close_old_connections()
         finally:
             connection.close()
 
