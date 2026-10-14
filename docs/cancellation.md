@@ -64,3 +64,39 @@ from django_tasks_google.base import cancel_task
 result = batch_process.enqueue()
 cancel_task(result.id, force=True)
 ```
+
+## Timeouts
+
+Set a timeout to limit how long each attempt of a task may run:
+
+```python
+from datetime import timedelta
+
+from django.tasks import task
+
+
+@task(backend="jobs", timeout=timedelta(hours=1))
+def batch_process():
+    ...
+```
+
+The timeout applies per attempt, so a retry gets the full timeout again. It is enforced by
+the platform the backend runs on:
+
+- **Cloud Run Jobs** uses it as the execution's task timeout. When it runs out, Cloud Run
+  sends a `SIGTERM`, raising `TaskCancelledError` inside the task as with forceful
+  cancellation, and the attempt is recorded with a `TaskTimeout` error. The task is then
+  retried, or marked failed on its last attempt. Allowed range: 1 second to 168 hours.
+- **Cloud Tasks** uses it as the task's dispatch deadline: how long Cloud Tasks waits for
+  your app to respond (10 minutes by default). Cloud Tasks cannot stop the request, so the
+  attempt runs to completion and records its own result. Allowed range: 15 seconds to 30
+  minutes.
+
+A timeout outside the backend's range raises `InvalidTask` when the task is defined.
+
+A cancelled execution has `cancelled_at` set on its `TaskExecution`, while a timed-out
+attempt adds a `django_tasks_google.base.TaskTimeout` entry to the result's `errors`.
+
+Locally, `ProcessBackend` in `cloud_run_jobs` mode SIGTERMs a task's subprocess once it
+outlives its timeout. Stopping the worker SIGTERMs its subprocesses too, and those attempts
+are recorded the same way.

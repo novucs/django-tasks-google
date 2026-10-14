@@ -64,7 +64,7 @@ heartbeat, storage, caching - see [Configuration](configuration.md)) plus the fo
 | `max_attempts`          | `1`             | Total attempts per task before it is marked failed (retries are driven by the worker, not an external queue).                                              |
 | `max_workers`           | `4`             | Maximum number of concurrent task subprocesses.                                                                                                            |
 | `poll_interval_seconds` | `1.0`           | How often the worker polls for ready and scheduled tasks.                                                                                                  |
-| `batch_size`            | `max_workers`   | Maximum number of ready tasks dispatched per poll iteration.                                                                                                |
+| `batch_size`            | `max_workers`   | Maximum number of ready tasks dispatched per poll iteration.                                                                                               |
 
 ## Scheduling and cancellation locally
 
@@ -76,5 +76,6 @@ started unless you pass `--catch-up`.
 
 Cancellation works locally too: graceful cancellation is cooperative (as on Google Cloud),
 and forceful cancellation (`cloud_run_jobs` mode) SIGTERMs the task's subprocess - raising
-`TaskCancelledError` inside the task just like Cloud Run Jobs. See
+`TaskCancelledError` inside the task just like Cloud Run Jobs. In the same mode, the worker
+SIGTERMs a subprocess that outlives its task's timeout. See
 [Cancelling tasks](cancellation.md).

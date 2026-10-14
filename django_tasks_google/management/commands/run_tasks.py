@@ -147,6 +147,7 @@ class Command(BaseCommand):
         self._reap()
         self._poll_scheduled(now)
         self._check_force_cancellations()
+        self._check_timeouts(now)
 
         if len(self.active) >= self.max_workers:
             return
@@ -204,6 +205,30 @@ class Command(BaseCommand):
                 )
                 proc.terminate()  # SIGTERM on POSIX
                 self.signaled.add(execution_id)
+
+    def _check_timeouts(self, now):
+        # Mirrors Cloud Run Jobs, which SIGTERMs an attempt that outlives its timeout.
+        if not self.active:
+            return
+        running = TaskExecution.objects.filter(
+            pk__in=list(self.active), status=TaskResultStatus.RUNNING
+        )
+        for execution in running:
+            timeout = execution.task.timeout
+            if (
+                execution.pk in self.signaled
+                or execution.backend.mode != "cloud_run_jobs"
+                or timeout is None
+                or now < execution.last_attempted_at + timeout
+            ):
+                continue
+            proc = self.active[execution.pk]
+            if proc.is_alive():
+                logger.info(
+                    "Timing out task id=%s (SIGTERM pid=%s)", execution.pk, proc.pid
+                )
+                proc.terminate()  # SIGTERM on POSIX
+                self.signaled.add(execution.pk)
 
     def _join_active(self):
         # Used by --once: wait for spawned children to finish, reaping them.

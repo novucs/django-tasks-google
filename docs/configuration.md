@@ -36,12 +36,13 @@ TASKS = {
 Select a backend per task with `@task(backend="jobs")`. The two GCP backends differ in
 what they support:
 
-|                          | `CloudTasksBackend`                  | `CloudRunJobsBackend`                          |
-|--------------------------|--------------------------------------|------------------------------------------------|
-| Best for                 | Short async work                     | Long-running and batch jobs                    |
-| Runs your code via       | POST to your app's execute endpoint  | A Cloud Run Job execution of your app's image  |
-| Deferred (`run_after`)   | Yes                                  | No                                             |
-| Forceful cancellation    | No                                   | Yes (SIGTERM, see [Cancelling tasks](cancellation.md)) |
+|                        | `CloudTasksBackend`                  | `CloudRunJobsBackend`                                         |
+|------------------------|--------------------------------------|---------------------------------------------------------------|
+| Best for               | Short async work                     | Long-running and batch jobs                                   |
+| Runs your code via     | POST to your app's execute endpoint  | A Cloud Run Job execution of your app's image                 |
+| Deferred (`run_after`) | Yes                                  | No                                                            |
+| Forceful cancellation  | No                                   | Yes (SIGTERM, see [Cancelling tasks](cancellation.md))        |
+| Timeouts               | 15s - 30m; Cloud Tasks stops waiting | 1s - 168h; SIGTERM (see [Timeouts](cancellation.md#timeouts)) |
 
 The Cloud Tasks queue and Cloud Run Job you reference (after applying `queue_aliases`) must
 already exist in your project. Retry policy (how many attempts) is read from that resource:
@@ -64,11 +65,11 @@ the queue's max attempts for Cloud Tasks, or the job's max retries for Cloud Run
 
 ## Request and routing
 
-| Option          | Default                 | Description                                                                                                                                                                                                                      |
-|-----------------|-------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `oidc_audience` | Derived from `base_url` | Audience value expected in the OIDC token sent by GCP. Defaults to the **origin of `base_url` (scheme + host, no path)**, matching Cloud Run's default auth behavior. Change only if your service validates tokens against a different audience. |
-| `execute_url`   | `<base_url>/execute/`   | Endpoint that receives task execution requests. Change if you mount task URLs at a different path.                                                                                                                              |
-| `schedule_url`  | `<base_url>/schedule/`  | Endpoint used by Cloud Scheduler to trigger tasks. Change if your scheduling endpoint lives elsewhere.                                                                                                                          |
+| Option          | Default                 | Description                                                                                                                                                                                                                                                            |
+|-----------------|-------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `oidc_audience` | Derived from `base_url` | Audience value expected in the OIDC token sent by GCP. Defaults to the **origin of `base_url` (scheme + host, no path)**, matching Cloud Run's default auth behavior. Change only if your service validates tokens against a different audience.                       |
+| `execute_url`   | `<base_url>/execute/`   | Endpoint that receives task execution requests. Change if you mount task URLs at a different path.                                                                                                                                                                     |
+| `schedule_url`  | `<base_url>/schedule/`  | Endpoint used by Cloud Scheduler to trigger tasks. Change if your scheduling endpoint lives elsewhere.                                                                                                                                                                 |
 | `queue_aliases` | `{}`                    | Maps a logical queue/job name (used in `@task` and `QUEUES`) to the real Cloud Tasks queue / Cloud Run Job name, e.g. `{"default": "your-cloud-task-queue-name"}`. Lets task code use stable short names across environments. Names not in the mapping are used as-is. |
 
 > Example:

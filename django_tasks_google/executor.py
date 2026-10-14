@@ -17,6 +17,7 @@ from django_tasks_google.base import (
     TaskCancelledError,
     TaskContext,
     TaskError,
+    TaskTimeout,
 )
 from django_tasks_google.models import TaskExecution
 
@@ -71,14 +72,8 @@ class TaskExecutor:
                     json.dumps(return_value, cls=DjangoJSONEncoder)
                 except TypeError as err:
                     raise PermanentTaskError("Cannot serialize return value") from err
-            except TaskCancelledError:
-                logger.warning(
-                    "Task id=%s path=%s worker=%s cancelled",
-                    self.execution_id,
-                    self.path,
-                    self.worker_id,
-                )
-                return None
+            except TaskCancelledError as err:
+                exception = err
             except Exception as err:
                 exception = err
                 tracing.record_exception(err)
@@ -142,6 +137,17 @@ class TaskExecutor:
                     self.worker_id,
                 )
                 return None
+
+            if isinstance(exception, TaskCancelledError):
+                # Cancelling ends the row before the SIGTERM, so a SIGTERM reaching
+                # a running row is Cloud Run timing the attempt out.
+                logger.warning(
+                    "Task id=%s path=%s worker=%s timed out",
+                    self.execution_id,
+                    self.path,
+                    self.worker_id,
+                )
+                exception = TaskTimeout()
 
             now = timezone.now()
             execution.lease_worker_id = None

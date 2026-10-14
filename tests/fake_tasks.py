@@ -1,6 +1,10 @@
+import signal
 import time
+from datetime import timedelta
 
 from django.tasks import task
+
+from django_tasks_google.base import cancel_task
 
 
 @task(backend="default", queue_name="default")
@@ -32,3 +36,25 @@ def sleepy_task(marker_path=None):
             with open(marker_path, "w") as fh:
                 fh.write("cancelled")
         raise
+
+
+@task(backend="process_jobs", queue_name="default", timeout=timedelta(minutes=5))
+def timed_task():
+    return "completed"
+
+
+@task(backend="process", queue_name="default", timeout=timedelta(minutes=5))
+def timed_cloud_tasks_task():
+    return "completed"
+
+
+# Stands in for the platform's timeout: SIGTERMs the attempt it runs in.
+@task(backend="process_jobs", queue_name="default")
+def terminated_task():
+    signal.raise_signal(signal.SIGTERM)
+
+
+@task(backend="process_jobs", queue_name="default", takes_context=True)
+def cancelled_then_terminated_task(context):
+    cancel_task(context.task_result.id, force=True)
+    signal.raise_signal(signal.SIGTERM)

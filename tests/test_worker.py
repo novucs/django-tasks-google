@@ -135,6 +135,39 @@ def test_child_entrypoint_retries_exhaust_to_failed():
     assert len(execution.errors) == 3
 
 
+@pytest.mark.django_db
+def test_child_entrypoint_records_sigterm_as_timeout(caplog):
+    execution = make_execution(
+        module_path="tests.fake_tasks.terminated_task", backend_alias="process_jobs"
+    )
+
+    with patch("django.db.connections.close_all"):
+        child_entrypoint(execution.pk)
+
+    execution.refresh_from_db()
+    assert execution.status == TaskResultStatus.READY
+    assert execution.errors[0]["exception_class_path"].endswith("TaskTimeout")
+    assert "timed out" in caplog.text
+
+
+@pytest.mark.django_db
+def test_child_entrypoint_leaves_cancelled_row_on_sigterm(caplog):
+    execution = make_execution(
+        module_path="tests.fake_tasks.cancelled_then_terminated_task",
+        backend_alias="process_jobs",
+        takes_context=True,
+    )
+
+    with patch("django.db.connections.close_all"):
+        child_entrypoint(execution.pk)
+
+    execution.refresh_from_db()
+    assert execution.status == TaskResultStatus.FAILED
+    assert execution.cancelled_at is not None
+    assert execution.errors == []
+    assert "timed out" not in caplog.text
+
+
 # -- poll_once claim/spawn -----------------------------------------------------
 
 
@@ -268,6 +301,64 @@ def test_check_force_cancellations_ignores_graceful_cancel(make_worker):
 
     assert proc.terminate_count == 0
     assert cmd.signaled == set()
+
+
+# -- Timeouts ------------------------------------------------------------------
+
+
+def start_attempt(make_worker, module_path, *, alias, started_ago):
+    execution = make_execution(module_path=module_path, backend_alias=alias)
+    cmd = make_worker(aliases={alias})
+    cmd.poll_once()
+    TaskExecution.objects.filter(pk=execution.pk).update(
+        status=TaskResultStatus.RUNNING,
+        last_attempted_at=timezone.now() - started_ago,
+    )
+    return cmd, cmd.active[execution.pk]
+
+
+@pytest.mark.django_db
+def test_check_timeouts_terminates_overdue_attempt_once(make_worker):
+    cmd, proc = start_attempt(
+        make_worker,
+        "tests.fake_tasks.timed_task",
+        alias="process_jobs",
+        started_ago=timedelta(minutes=6),
+    )
+
+    cmd.poll_once()
+    cmd.poll_once()  # already signaled -> not terminated again
+
+    assert proc.terminate_count == 1
+
+
+@pytest.mark.django_db
+def test_check_timeouts_ignores_attempt_within_timeout(make_worker):
+    cmd, proc = start_attempt(
+        make_worker,
+        "tests.fake_tasks.timed_task",
+        alias="process_jobs",
+        started_ago=timedelta(minutes=4),
+    )
+
+    cmd.poll_once()
+
+    assert proc.terminate_count == 0
+
+
+@pytest.mark.django_db
+def test_check_timeouts_ignores_cloud_tasks_mode(make_worker):
+    # Cloud Tasks stops waiting at its deadline but never stops the handler.
+    cmd, proc = start_attempt(
+        make_worker,
+        "tests.fake_tasks.timed_cloud_tasks_task",
+        alias="process",
+        started_ago=timedelta(minutes=6),
+    )
+
+    cmd.poll_once()
+
+    assert proc.terminate_count == 0
 
 
 # -- Scheduled (cron) tasks ----------------------------------------------------

@@ -1,3 +1,4 @@
+from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
@@ -9,7 +10,7 @@ from django_tasks_google.scheduler import (
     schedule_task,
     sync_scheduled_task,
 )
-from tests.fake_tasks import sample_task
+from tests.fake_tasks import sample_task, timed_task
 
 
 class _FakeJob:
@@ -56,6 +57,14 @@ def test_schedule_task_leaves_backend_alias_empty_when_not_provided():
 
     scheduled.refresh_from_db()
     assert scheduled.backend_alias == ""
+
+
+@pytest.mark.django_db
+def test_scheduled_task_keeps_task_timeout():
+    with patch.object(ScheduledTask, "sync", autospec=True):
+        scheduled = schedule_task(timed_task, "*/10 * * * *")
+
+    assert scheduled.task.timeout == timedelta(minutes=5)
 
 
 @pytest.mark.django_db

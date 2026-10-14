@@ -9,9 +9,11 @@ from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
 from django.tasks import TaskResultStatus
 from django.tasks.backends.base import BaseTaskBackend
+from django.tasks.exceptions import InvalidTask
 from django.tasks.signals import task_enqueued
 
 from django_tasks_google import tracing
+from django_tasks_google.base import Task
 from django_tasks_google.models import TaskExecution
 
 DEFAULT_HEARTBEAT_ENABLED = True
@@ -37,6 +39,9 @@ class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
     supports_force_cancel = False
     # OTel messaging.system value; subclasses set the GCP product.
     otel_messaging_system = "django_tasks_google"
+    # Inclusive Task.timeout range; subclasses set their platform's limits.
+    timeout_range: tuple[timedelta, timedelta]
+    task_class = Task
 
     def __init__(self, alias, params):
         super().__init__(alias, params)
@@ -110,6 +115,17 @@ class DjangoTasksGoogleBackend(BaseTaskBackend, ABC):
         """
         return self.queue_aliases.get(queue_name, queue_name)
 
+    def validate_task(self, task):
+        super().validate_task(task)
+        # Tasks defined on another backend and moved here with .using() are plain
+        # Django Tasks, without a timeout.
+        timeout = getattr(task, "timeout", None)
+        min_timeout, max_timeout = self.timeout_range
+        if timeout is not None and not min_timeout <= timeout <= max_timeout:
+            raise InvalidTask(
+                f"Task timeout must be between {min_timeout} and {max_timeout}."
+            )
+
     def enqueue(self, task, args, kwargs):
         self.validate_task(task)
         with transaction.atomic():
@@ -174,6 +190,7 @@ class CloudRunJobsBackend(DjangoTasksGoogleBackend):
     supports_priority = False
     supports_force_cancel = True
     otel_messaging_system = "gcp_cloud_run_jobs"
+    timeout_range = (timedelta(seconds=1), timedelta(hours=168))
 
     def __init__(self, alias, params):
         super().__init__(alias, params)
@@ -230,7 +247,8 @@ class CloudRunJobsBackend(DjangoTasksGoogleBackend):
                             args=[*self.command, str(execution.pk)],  # type: ignore
                             env=env,  # type: ignore
                         )
-                    ]
+                    ],
+                    timeout=execution.task.timeout,  # type: ignore
                 ),
             )
             try:
@@ -277,6 +295,7 @@ class CloudTasksBackend(DjangoTasksGoogleBackend):
     supports_get_result = True
     supports_priority = False
     otel_messaging_system = "gcp_cloud_tasks"
+    timeout_range = (timedelta(seconds=15), timedelta(minutes=30))
 
     def enqueue_gcp(self, execution_id, trace_context=None):
         from google.cloud import tasks_v2
@@ -309,6 +328,7 @@ class CloudTasksBackend(DjangoTasksGoogleBackend):
                         audience=self.oidc_audience,
                     ),
                 ),
+                dispatch_deadline=execution.task.timeout,  # type: ignore
             )
             if execution.run_after:
                 schedule_time = timestamp_pb2.Timestamp()
@@ -386,9 +406,12 @@ class ProcessBackend(DjangoTasksGoogleBackend):
         )
         # Cloud Tasks supports run_after; Cloud Run Jobs does not.
         self.supports_defer = mode == "cloud_tasks"
-        # Like Cloud Run Jobs, cloud_run_jobs mode can be forcibly cancelled
-        # (the worker SIGTERMs the task's subprocess).
+        # Like Cloud Run Jobs, cloud_run_jobs mode can be forcibly cancelled and
+        # timed out (the worker SIGTERMs the task's subprocess).
         self.supports_force_cancel = mode == "cloud_run_jobs"
+        self.timeout_range = (
+            CloudTasksBackend if mode == "cloud_tasks" else CloudRunJobsBackend
+        ).timeout_range
         self.max_attempts = self.options.get("max_attempts", 1)
         # Worker tuning lives on the backend so multiple aliases can differ.
         self.poll_interval = self.options.get("poll_interval_seconds", 1.0)

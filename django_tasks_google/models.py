@@ -5,7 +5,6 @@ from django.db import models, transaction
 from django.tasks import (
     DEFAULT_TASK_BACKEND_ALIAS,
     DEFAULT_TASK_QUEUE_NAME,
-    Task,
     TaskResult,
     TaskResultStatus,
     task_backends,
@@ -13,6 +12,8 @@ from django.tasks import (
 from django.tasks.base import DEFAULT_TASK_PRIORITY, TaskError
 from django.utils import timezone
 from django.utils.module_loading import import_string
+
+from django_tasks_google.base import Task
 
 logger = logging.getLogger("django_tasks_google")
 
@@ -68,6 +69,7 @@ class ScheduledTask(models.Model):
             queue_name=self.queue_name or default.queue_name,
             run_after=coalesce(self.run_after, default.run_after),
             takes_context=coalesce(self.takes_context, default.takes_context),
+            timeout=getattr(default, "timeout", None),
         )
 
     def enqueue(self):
@@ -126,13 +128,15 @@ class TaskExecution(models.Model):
 
     @property
     def task(self) -> Task:
+        default = import_string(self.module_path)
         return Task(
             priority=self.priority,
-            func=import_string(self.module_path).func,
+            func=default.func,
             backend=self.backend_alias,
             queue_name=self.queue_name,
             run_after=self.run_after,
             takes_context=self.takes_context,
+            timeout=getattr(default, "timeout", None),
         )
 
     @property

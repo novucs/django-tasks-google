@@ -1,6 +1,8 @@
 import threading
 from dataclasses import dataclass
+from datetime import timedelta
 
+from django.tasks import Task as DjangoTask
 from django.tasks import TaskContext as DjangoTaskContext
 from django.tasks import TaskResult
 
@@ -15,6 +17,16 @@ class PermanentTaskError(TaskError):
 
 class TaskCancelledError(BaseException):
     pass
+
+
+class TaskTimeout(TimeoutError):
+    pass
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Task(DjangoTask):
+    # Per attempt; enforced by the platform the backend runs tasks on.
+    timeout: timedelta | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

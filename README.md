@@ -5,11 +5,11 @@ without managing workers or leaving Django.
 
 [![PyPI version](https://img.shields.io/pypi/v/django-tasks-google.svg)](https://pypi.org/project/django-tasks-google/)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://pypi.org/project/django-tasks-google/)
-[![Django](https://img.shields.io/badge/django-6.0%2B-092e20.svg)](https://docs.djangoproject.com/en/6.0/topics/tasks/)
+[![Django](https://img.shields.io/badge/django-6.1%2B-092e20.svg)](https://docs.djangoproject.com/en/6.1/topics/tasks/)
 [![CI](https://github.com/novucs/django-tasks-google/actions/workflows/ci.yml/badge.svg)](https://github.com/novucs/django-tasks-google/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Built on Django 6.0's Task Framework (`django.tasks`).
+Built on Django 6.1's Task Framework (`django.tasks`).
 
 ## What it does
 
@@ -158,7 +158,7 @@ for every option.
 - [Configuration](docs/configuration.md) - every backend option, defaults, and reliability settings
 - [Local development](docs/local-development.md) - run tasks on your machine with `ProcessBackend`
 - [Scheduling (cron)](docs/scheduling.md) - recurring tasks via Cloud Scheduler
-- [Cancelling tasks](docs/cancellation.md) - graceful and forceful cancellation
+- [Cancelling tasks](docs/cancellation.md) - graceful and forceful cancellation, and timeouts
 - [Observability](docs/observability.md) - OpenTelemetry tracing
 
 ## Data model
@@ -184,4 +184,4 @@ DJANGO_SETTINGS_MODULE=tests.settings uv run python -m django makemigrations --c
 
 ## References
 
-- [Django Task Framework](https://docs.djangoproject.com/en/6.0/topics/tasks/)
+- [Django Task Framework](https://docs.djangoproject.com/en/6.1/topics/tasks/)

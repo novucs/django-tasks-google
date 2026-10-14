@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -14,7 +15,7 @@ from django_tasks_google.backends import (
     get_oidc_audience,
 )
 from django_tasks_google.models import TaskExecution
-from tests.fake_tasks import sample_task
+from tests.fake_tasks import sample_task, timed_task
 
 
 @pytest.mark.django_db
@@ -197,6 +198,7 @@ def test_cloud_run_enqueue_gcp_sets_execution_name_on_success(
         "execute_task",
         str(execution.pk),
     ]
+    assert "timeout" not in request.overrides
     send_mock.assert_called_once()
 
 
@@ -290,6 +292,7 @@ def test_cloud_tasks_enqueue_gcp_builds_expected_http_request(
         == "worker@example.iam.gserviceaccount.com"
     )
     assert task_proto.http_request.oidc_token.audience == "https://example.com"
+    assert "dispatch_deadline" not in task_proto
     send_mock.assert_called_once()
 
 
@@ -780,3 +783,78 @@ def test_cloud_run_get_max_attempts_resolves_queue_alias():
 
     name = jobs_client_cls.return_value.get_job.call_args.kwargs["name"]
     assert name == "projects/p1/locations/us-central1/jobs/my-service-job-prod"
+
+
+# -- Timeouts ------------------------------------------------------------------
+
+
+def test_task_decorator_builds_task_with_timeout():
+    assert timed_task.timeout == timedelta(minutes=5)
+
+
+@pytest.mark.parametrize(
+    ("alias", "timeout"),
+    [
+        ("process", timedelta(seconds=14)),
+        ("process", timedelta(minutes=31)),
+        ("process_jobs", timedelta(0)),
+        ("process_jobs", timedelta(hours=169)),
+    ],
+)
+def test_validate_task_rejects_timeout_outside_platform_range(alias, timeout):
+    with pytest.raises(InvalidTask, match="Task timeout must be between"):
+        replace(timed_task, backend=alias, timeout=timeout)
+
+
+@pytest.mark.parametrize(
+    ("alias", "timeout"),
+    [("process", timedelta(minutes=30)), ("process_jobs", timedelta(hours=168))],
+)
+def test_validate_task_accepts_platform_maximum(alias, timeout):
+    replace(timed_task, backend=alias, timeout=timeout)
+
+
+@pytest.mark.django_db
+def test_cloud_run_enqueue_gcp_overrides_timeout():
+    backend = _cloud_run_backend_with_aliases({})
+    execution = TaskExecution.objects.create(
+        module_path="tests.fake_tasks.timed_task",
+        backend_alias="default",
+        queue_name="default",
+        args=[],
+        kwargs={},
+    )
+
+    with (
+        patch.object(backend, "get_max_attempts_with_cache", return_value=3),
+        patch("google.cloud.run_v2.JobsClient", autospec=True) as jobs_client_cls,
+    ):
+        jobs_client = jobs_client_cls.return_value
+        jobs_client.run_job.return_value.metadata.name = "executions/e1"
+        backend.enqueue_gcp(execution.pk)
+
+    request = jobs_client.run_job.call_args.kwargs["request"]
+    assert request.overrides.timeout == timedelta(minutes=5)
+
+
+@pytest.mark.django_db
+def test_cloud_tasks_enqueue_gcp_sets_dispatch_deadline_to_timeout():
+    backend = task_backends["default"]
+    execution = TaskExecution.objects.create(
+        module_path="tests.fake_tasks.timed_task",
+        backend_alias="default",
+        queue_name="default",
+        args=[],
+        kwargs={},
+    )
+
+    with (
+        patch.object(backend, "get_max_attempts_with_cache", return_value=5),
+        patch("google.cloud.tasks_v2.CloudTasksClient", autospec=True) as client_cls,
+    ):
+        client = client_cls.return_value
+        client.create_task.return_value.name = "projects/p/tasks/t1"
+        backend.enqueue_gcp(execution.pk)
+
+    task_proto = client.create_task.call_args.kwargs["task"]
+    assert task_proto.dispatch_deadline == timedelta(minutes=5)
